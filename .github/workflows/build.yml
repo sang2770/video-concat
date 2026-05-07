@@ -1,0 +1,83 @@
+name: Build Windows App
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch: # Allow manual triggering
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check for required files
+        run: |
+          echo "Checking build requirements..."
+          if (!(Test-Path "assets/icon.ico")) {
+            Write-Warning "icon.ico not found in assets/, using default icon"
+          }
+          echo "Build configuration ready"
+
+      - name: Build for Windows
+        run: npm run build-win
+        env:
+          CI: true
+
+      - name: List build output
+        run: |
+          echo "Build completed. Contents of dist folder:"
+          Get-ChildItem -Path "dist" -Recurse | Format-Table Name, Length, LastWriteTime
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-${{ github.sha }}
+          path: dist/
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' 
+        uses: softprops/action-gh-release@v2
+        with:
+          delete_release: true
+          tag_name: v${{ github.run_number }}-${{ github.run_attempt }}
+          name: Video tool v${{ github.run_number }}
+          files: |
+             dist/*Setup*.exe
+             dist/*portable*.exe
+          draft: false
+          prerelease: false
+          body: |
+            🚀 *Video Tool - Windows Release**
+
+            **Build Information:**
+            - Version: v${{ github.run_number }}
+            - Commit: ${{ github.sha }}
+            - Built on: ${{ github.run_date }}
+
+            **What's included:**
+            - Windows installer (NSIS)
+            - Portable executable
+
+            **Download:**
+            - For installation: Download the `.exe` installer
+            - For portable use: Download the `-portable.exe` file
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
