@@ -1,6 +1,9 @@
 const ffmpeg = require('fluent-ffmpeg');
+const ffmpegPath = require('ffmpeg-static');
+const ffprobe = require('node-ffprobe');
 const path = require('path');
 const fs = require('fs');
+
 const { execSync } = require('child_process');
 
 class VideoProcessor {
@@ -15,11 +18,8 @@ class VideoProcessor {
 
   setupFFmpeg() {
     try {
-      const ffmpegPath = this.findFFmpeg();
-      if (ffmpegPath) {
-        ffmpeg.setFfmpegPath(ffmpegPath);
-        ffmpeg.setFfprobePath(this.findFFprobe());
-      }
+      ffmpeg.setFfmpegPath(ffmpegPath);
+      ffmpeg.setFfprobePath(ffprobe);
     } catch (error) {
       console.warn('FFmpeg path not found, using system default:', error.message);
     }
@@ -133,7 +133,9 @@ class VideoProcessor {
       const videoDurations = await this.getVideoDurations(processedVideos);
       const audioVideoDuration = await this.getVideoDuration(audioVideo.path);
 
-      const targetDuration = 49 * 3600 + 59 * 60 + 59; // 49:59:59 in seconds
+      // const targetDuration = 49 * 3600 + 59 * 60 + 59; // 49:59:59 in seconds
+      // 20p
+      const targetDuration = 20 * 3600 + 59 * 60 + 59; // 20:59:59 in seconds
 
       progressCallback({ stage: 'Creating final concatenation', progress: 70 });
 
