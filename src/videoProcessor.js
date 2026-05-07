@@ -8,6 +8,8 @@ class VideoProcessor {
     this.isCancelled = false;
     this.ffmpegProcesses = [];
     this.tempFiles = [];
+    this.usedVideos = [];
+    this.usedAudios = [];
     this.setupFFmpeg();
   }
 
@@ -71,6 +73,8 @@ class VideoProcessor {
   async processVideos(config, progressCallback) {
     try {
       this.isCancelled = false;
+      this.usedVideos = [];
+      this.usedAudios = [];
       const {
         videoFolder,
         audioFolder,
@@ -127,20 +131,21 @@ class VideoProcessor {
 
       // Step 3: Get durations
       const videoDurations = await this.getVideoDurations(processedVideos);
-      const audioVideoDuration = await this.getVideoDuration(audioVideo);
+      const audioVideoDuration = await this.getVideoDuration(audioVideo.path);
 
       const targetDuration = 49 * 3600 + 59 * 60 + 59; // 49:59:59 in seconds
 
       progressCallback({ stage: 'Creating final concatenation', progress: 70 });
 
       // Step 4: Create concatenation list with proper looping
-      const concatList = await this.createConcatenationList(
+      const concatData = await this.createConcatenationList(
         processedVideos,
-        audioVideo,
+        audioVideo.path,
         videoDurations,
         audioVideoDuration,
         targetDuration,
-        outputFolder
+        outputFolder,
+        videoFiles
       );
 
       if (this.isCancelled) return { cancelled: true };
@@ -149,12 +154,22 @@ class VideoProcessor {
 
       // Step 5: Concatenate all videos
       const finalOutput = await this.concatenateVideos(
-        concatList,
+        concatData.concatFile,
         outputFolder,
         videoFormat
       );
 
       progressCallback({ stage: 'Complete', progress: 100 });
+
+      // Step 6: Generate metadata note file
+      await this.generateMetadataNote(
+        finalOutput,
+        concatData.videoSequence,
+        audioVideo.selectedAudios,
+        concatData.totalDuration,
+        videoFiles,
+        audioFiles
+      );
 
       // Cleanup temp files
       this.cleanupTempFiles();
@@ -255,9 +270,14 @@ class VideoProcessor {
     const selectedAudios = this.selectRandomAudios(audioFiles, audioCount);
     const outputFile = path.join(outputFolder, `audio_video.${format}`);
     this.tempFiles.push(outputFile);
+    this.usedAudios = selectedAudios.map(f => path.basename(f));
 
     // Create a black screen video with concatenated audio
-    return await this.createBlackVideoWithAudio(selectedAudios, outputFile, format, bitrate);
+    const result = await this.createBlackVideoWithAudio(selectedAudios, outputFile, format, bitrate);
+    return {
+      path: result,
+      selectedAudios: selectedAudios.map(f => path.basename(f))
+    };
   }
 
   selectRandomAudios(audioFiles, count) {
@@ -323,8 +343,9 @@ class VideoProcessor {
     return durations;
   }
 
-  async createConcatenationList(processedVideos, audioVideo, videoDurations, audioVideoDuration, targetDuration, outputFolder) {
+  async createConcatenationList(processedVideos, audioVideo, videoDurations, audioVideoDuration, targetDuration, outputFolder, originalVideoFiles) {
     const concatList = [];
+    const videoSequence = [];
     let totalDuration = 0;
 
     // Calculate total duration of all processed videos
@@ -343,6 +364,16 @@ class VideoProcessor {
       for (const video of processedVideos) {
         concatList.push(video);
         totalDuration += videoDurations[video];
+        
+        // Track original video filename
+        const processedIndex = processedVideos.indexOf(video);
+        if (processedIndex < originalVideoFiles.length) {
+          videoSequence.push({
+            order: videoSequence.length + 1,
+            filename: path.basename(originalVideoFiles[processedIndex]),
+            duration: videoDurations[video]
+          });
+        }
 
         if (totalDuration >= remainingDuration) {
           break;
@@ -367,7 +398,11 @@ class VideoProcessor {
     fs.writeFileSync(concatFile, concatContent);
     this.tempFiles.push(concatFile);
 
-    return concatFile;
+    return {
+      concatFile,
+      videoSequence,
+      totalDuration
+    };
   }
 
   concatenateVideos(concatFile, outputFolder, format) {
@@ -391,6 +426,69 @@ class VideoProcessor {
       this.ffmpegProcesses.push(proc);
       proc.run();
     });
+  }
+
+  generateMetadataNote(outputFile, videoSequence, audioSequence, totalDuration, allVideoFiles, allAudioFiles) {
+    const noteFile = outputFile.replace(/\.[^.]+$/, '.txt');
+    const now = new Date();
+    const timestamp = now.toLocaleString('vi-VN');
+    
+    // Convert seconds to HH:MM:SS format
+    const formatDuration = (seconds) => {
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      const secs = Math.floor(seconds % 60);
+      return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    };
+
+    let noteContent = '═══════════════════════════════════════════════════════════\n';
+    noteContent += '                    THÔNG TIN VIDEO OUTPUT\n';
+    noteContent += '═══════════════════════════════════════════════════════════\n\n';
+    
+    noteContent += `📅 Ngày tạo: ${timestamp}\n`;
+    noteContent += `📁 File output: ${path.basename(outputFile)}\n`;
+    noteContent += `⏱️  Tổng thời lượng: ${formatDuration(totalDuration)}\n\n`;
+    
+    noteContent += '───────────────────────────────────────────────────────────\n';
+    noteContent += '📹 THỨ TỰ VIDEO (Video Sequence)\n';
+    noteContent += '───────────────────────────────────────────────────────────\n';
+    
+    if (videoSequence.length > 0) {
+      videoSequence.forEach((video, index) => {
+        noteContent += `${index + 1}. ${video.filename}\n`;
+        noteContent += `   Thời lượng: ${formatDuration(video.duration)}\n`;
+      });
+    } else {
+      noteContent += 'Không có video nào\n';
+    }
+    
+    noteContent += '\n───────────────────────────────────────────────────────────\n';
+    noteContent += '🎵 THỨ TỰ BÀI HÁT (Audio Sequence)\n';
+    noteContent += '───────────────────────────────────────────────────────────\n';
+    
+    if (audioSequence && audioSequence.length > 0) {
+      audioSequence.forEach((audio, index) => {
+        noteContent += `${index + 1}. ${audio}\n`;
+      });
+    } else {
+      noteContent += 'Không có bài hát nào\n';
+    }
+    
+    noteContent += '\n───────────────────────────────────────────────────────────\n';
+    noteContent += '📊 THỐNG KÊ\n';
+    noteContent += '───────────────────────────────────────────────────────────\n';
+    noteContent += `Tổng số video được sử dụng: ${videoSequence.length}\n`;
+    noteContent += `Tổng số bài hát được sử dụng: ${audioSequence ? audioSequence.length : 0}\n`;
+    noteContent += `Tổng số video có sẵn: ${allVideoFiles.length}\n`;
+    noteContent += `Tổng số bài hát có sẵn: ${allAudioFiles.length}\n`;
+    noteContent += '\n═══════════════════════════════════════════════════════════\n';
+
+    try {
+      fs.writeFileSync(noteFile, noteContent, 'utf-8');
+      console.log(`Metadata note file created: ${noteFile}`);
+    } catch (error) {
+      console.error(`Error creating metadata note file: ${error.message}`);
+    }
   }
 }
 

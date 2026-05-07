@@ -176,7 +176,8 @@ async function startProcessing() {
   } else if (result.error) {
     showStatus(`Lỗi: ${result.error}`, 'error');
   } else if (result.success) {
-    showStatus(`✅ Thành công! Video đã được lưu tại: ${result.outputFile}`, 'success');
+    const noteFile = result.outputFile.replace(/\.[^.]+$/, '.txt');
+    showStatus(`✅ Thành công!\n📹 Video: ${result.outputFile}\n📝 File note: ${noteFile}`, 'success');
   }
 
   progressSection.classList.add('hidden');
