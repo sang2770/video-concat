@@ -1,6 +1,6 @@
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegPath = require('ffmpeg-static');
-const ffprobe = require('node-ffprobe');
+const ffprobe = require('@ffprobe-installer/ffprobe');
 const path = require('path');
 const fs = require('fs');
 
@@ -13,13 +13,24 @@ class VideoProcessor {
     this.tempFiles = [];
     this.usedVideos = [];
     this.usedAudios = [];
+    this.instanceId = Date.now() + '_' + Math.random().toString(36).substr(2, 9); // Unique ID per instance
     this.setupFFmpeg();
+  }
+
+  parseTimeToSeconds(time) {
+    const parts = time.split(':');
+
+    const h = parseFloat(parts[0]) || 0;
+    const m = parseFloat(parts[1]) || 0;
+    const s = parseFloat(parts[2]) || 0;
+
+    return h * 3600 + m * 60 + s;
   }
 
   setupFFmpeg() {
     try {
       ffmpeg.setFfmpegPath(ffmpegPath);
-      ffmpeg.setFfprobePath(ffprobe);
+      ffmpeg.setFfprobePath(ffprobe.path);
     } catch (error) {
       console.warn('FFmpeg path not found, using system default:', error.message);
     }
@@ -81,7 +92,6 @@ class VideoProcessor {
         videoFormat,
         videoBitrate,
         audioCount,
-        threadCount,
         outputFolder
       } = config;
 
@@ -100,75 +110,65 @@ class VideoProcessor {
         throw new Error('No audio files found');
       }
 
-      progressCallback({ stage: 'Processing input videos', progress: 5 });
+      progressCallback({ stage: 'Analyzing video durations', progress: 10 });
 
-      // Step 1: Process input videos with thread count
-      const processedVideos = await this.processInputVideos(
+      // Step 1: Get durations of original videos
+      const videoDurations = await this.getVideoDurations(videoFiles);
+
+      if (this.isCancelled) return { cancelled: true };
+
+      progressCallback({ stage: 'Selecting random audios', progress: 20 });
+
+      // Step 2: Select random audios
+      const selectedAudios = this.selectRandomAudios(audioFiles, audioCount);
+      this.usedAudios = selectedAudios.map(f => path.basename(f));
+
+      // Step 3: Calculate audio duration
+      const audioDurations = await this.getVideoDurations(selectedAudios);
+      const totalAudioDuration = Object.values(audioDurations).reduce((a, b) => a + b, 0);
+
+      if (this.isCancelled) return { cancelled: true };
+
+      progressCallback({ stage: 'Creating optimized concat list', progress: 30 });
+
+      // Target duration: 0:20:59
+      const targetDuration = 0 * 3600 + 20 * 60 + 59;
+
+      // Step 4: Create optimized concatenation list
+      // Videos loop nhiều lần, sau đó thêm black screen với audio
+      const concatData = await this.createOptimizedConcatenationList(
         videoFiles,
+        videoDurations,
+        totalAudioDuration,
+        targetDuration,
+        outputFolder
+      );
+
+      if (this.isCancelled) return { cancelled: true };
+
+      progressCallback({ stage: 'Encoding final video (single pass)', progress: 50 });
+
+      // Step 5: Concat + Encode in ONE PASS (most efficient)
+      // Video loops + black screen with audio at the end
+      const finalOutput = await this.concatenateAndEncodeOnce(
+        concatData.concatFile,
+        selectedAudios,
         outputFolder,
         videoFormat,
         videoBitrate,
-        threadCount,
-        progressCallback
-      );
-
-      if (this.isCancelled) return { cancelled: true };
-
-      progressCallback({ stage: 'Creating audio video', progress: 40 });
-
-      // Step 2: Create black screen video with random audio
-      const audioVideo = await this.createAudioVideo(
-        audioFiles,
-        outputFolder,
-        audioCount,
-        videoFormat,
-        videoBitrate
-      );
-
-      if (this.isCancelled) return { cancelled: true };
-
-      progressCallback({ stage: 'Calculating durations', progress: 55 });
-
-      // Step 3: Get durations
-      const videoDurations = await this.getVideoDurations(processedVideos);
-      const audioVideoDuration = await this.getVideoDuration(audioVideo.path);
-
-      // const targetDuration = 49 * 3600 + 59 * 60 + 59; // 49:59:59 in seconds
-      // 20p
-      const targetDuration = 20 * 3600 + 59 * 60 + 59; // 20:59:59 in seconds
-
-      progressCallback({ stage: 'Creating final concatenation', progress: 70 });
-
-      // Step 4: Create concatenation list with proper looping
-      const concatData = await this.createConcatenationList(
-        processedVideos,
-        audioVideo.path,
-        videoDurations,
-        audioVideoDuration,
         targetDuration,
-        outputFolder,
-        videoFiles
-      );
-
-      if (this.isCancelled) return { cancelled: true };
-
-      progressCallback({ stage: 'Concatenating videos', progress: 85 });
-
-      // Step 5: Concatenate all videos
-      const finalOutput = await this.concatenateVideos(
-        concatData.concatFile,
-        outputFolder,
-        videoFormat
+        totalAudioDuration,
+        progressCallback
       );
 
       progressCallback({ stage: 'Complete', progress: 100 });
 
       // Step 6: Generate metadata note file
-      await this.generateMetadataNote(
+      this.generateMetadataNote(
         finalOutput,
         concatData.videoSequence,
-        audioVideo.selectedAudios,
-        concatData.totalDuration,
+        selectedAudios.map(f => path.basename(f)),
+        targetDuration,
         videoFiles,
         audioFiles
       );
@@ -203,82 +203,76 @@ class VideoProcessor {
       .sort();
   }
 
-  async processInputVideos(videoFiles, outputFolder, format, bitrate, threadCount, progressCallback) {
-    const processedVideos = [];
-    const totalVideos = videoFiles.length;
-    let completedVideos = 0;
+  async createOptimizedConcatenationList(videoFiles, videoDurations, audioDuration, targetDuration, outputFolder) {
+    // Use instance ID for unique filenames
+    const concatList = [];
+    const videoSequence = [];
+    let totalDuration = 0;
 
-    // Process videos in batches based on thread count
-    for (let i = 0; i < totalVideos; i += threadCount) {
-      if (this.isCancelled) break;
+    // Calculate total duration of all videos
+    const totalVideosDuration = Object.values(videoDurations).reduce((a, b) => a + b, 0);
 
-      // Get batch of videos to process in parallel
-      const batch = videoFiles.slice(i, Math.min(i + threadCount, totalVideos));
-      
-      // Process all videos in batch in parallel
-      const batchPromises = batch.map((videoFile, batchIndex) => {
-        const actualIndex = i + batchIndex;
-        const fileName = path.basename(videoFile, path.extname(videoFile));
-        const outputFile = path.join(outputFolder, `processed_${actualIndex}_${fileName}.${format}`);
-        
-        return this.convertVideo(videoFile, outputFile, format, bitrate)
-          .then(() => {
-            completedVideos++;
-            const progress = 5 + Math.floor(completedVideos / totalVideos * 35);
-            progressCallback({ 
-              stage: `Processing videos (${completedVideos}/${totalVideos}) - ${threadCount} threads`, 
-              progress 
-            });
-            return outputFile;
-          });
-      });
-
-      // Wait for all videos in batch to complete
-      const batchResults = await Promise.all(batchPromises);
-      processedVideos.push(...batchResults);
-      
-      // Add to temp files
-      batchResults.forEach(file => this.tempFiles.push(file));
+    if (totalVideosDuration === 0) {
+      throw new Error('No valid video durations found');
     }
 
-    return processedVideos;
-  }
+    // Calculate remaining duration after audio
+    const remainingDuration = targetDuration - audioDuration;
 
-  convertVideo(inputFile, outputFile, format, bitrate) {
-    return new Promise((resolve, reject) => {
-      const proc = ffmpeg(inputFile)
-        .output(outputFile)
-        .outputOptions([
-          `-b:v ${bitrate}M`,
-          '-c:v libx264',
-          '-preset fast',
-          '-c:a aac'
-        ])
-        .on('end', () => {
-          this.ffmpegProcesses = this.ffmpegProcesses.filter(p => p !== proc);
-          resolve();
-        })
-        .on('error', (err) => {
-          this.ffmpegProcesses = this.ffmpegProcesses.filter(p => p !== proc);
-          reject(new Error(`Video conversion failed: ${err.message}`));
+    if (remainingDuration <= 0) {
+      throw new Error('Audio duration exceeds target duration');
+    }
+
+    // Calculate how many full loops we need
+    const fullLoops = Math.floor(remainingDuration / totalVideosDuration);
+    const remainderDuration = remainingDuration - (fullLoops * totalVideosDuration);
+
+    // Add full loops
+    for (let loop = 0; loop < fullLoops; loop++) {
+      for (const video of videoFiles) {
+        concatList.push(video);
+        totalDuration += videoDurations[video];
+        videoSequence.push({
+          order: videoSequence.length + 1,
+          filename: path.basename(video),
+          duration: videoDurations[video]
+        });
+      }
+    }
+
+    // Add partial loop to fill remaining time
+    if (remainderDuration > 0) {
+      let partialDuration = 0;
+      for (const video of videoFiles) {
+        concatList.push(video);
+        const videoDur = videoDurations[video];
+        partialDuration += videoDur;
+        totalDuration += videoDur;
+        videoSequence.push({
+          order: videoSequence.length + 1,
+          filename: path.basename(video),
+          duration: videoDur
         });
 
-      this.ffmpegProcesses.push(proc);
-      proc.run();
-    });
-  }
+        if (partialDuration >= remainderDuration) {
+          break;
+        }
+      }
+    }
 
-  async createAudioVideo(audioFiles, outputFolder, audioCount, format, bitrate) {
-    const selectedAudios = this.selectRandomAudios(audioFiles, audioCount);
-    const outputFile = path.join(outputFolder, `audio_video.${format}`);
-    this.tempFiles.push(outputFile);
-    this.usedAudios = selectedAudios.map(f => path.basename(f));
+    // Create concat demuxer file with unique instance ID
+    const concatFile = path.join(outputFolder, `concat_list_${this.instanceId}.txt`);
+    const concatContent = concatList
+      .map(file => `file '${file.replace(/\\/g, '/')}'`)
+      .join('\n');
 
-    // Create a black screen video with concatenated audio
-    const result = await this.createBlackVideoWithAudio(selectedAudios, outputFile, format, bitrate);
+    fs.writeFileSync(concatFile, concatContent);
+    this.tempFiles.push(concatFile);
+
     return {
-      path: result,
-      selectedAudios: selectedAudios.map(f => path.basename(f))
+      concatFile,
+      videoSequence,
+      totalDuration
     };
   }
 
@@ -295,27 +289,106 @@ class VideoProcessor {
     return selected;
   }
 
-  createBlackVideoWithAudio(audioFiles, outputFile, format, bitrate) {
+  async concatenateAndEncodeOnce(concatFile, audioFiles, outputFolder, format, bitrate, targetDuration, audioDuration, progressCallback) {
     return new Promise((resolve, reject) => {
-      // Create a 1 hour black video with audio
-      const proc = ffmpeg()
-        .input('color=c=black:s=1920x1080:d=3600')
-        .inputOptions(['-f', 'lavfi'])
-        .input(audioFiles[0])
+      // Use instance ID for unique filenames
+      const finalOutput = path.join(outputFolder, `final_output_${this.instanceId}.${format}`);
+
+      // Create concat audio file with unique instance ID
+      const audioConcatFile = path.join(outputFolder, `audio_concat_list_${this.instanceId}.txt`);
+      const audioContent = audioFiles
+        .map(file => `file '${file.replace(/\\/g, '/')}'`)
+        .join('\n');
+      fs.writeFileSync(audioConcatFile, audioContent);
+      this.tempFiles.push(audioConcatFile);
+
+      // Format durations
+      const formatTime = (seconds) => {
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = Math.floor(seconds % 60);
+        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+      };
+
+      const videoDuration = targetDuration - audioDuration;
+      const videoTime = formatTime(videoDuration);
+      const audioTime = formatTime(Math.ceil(audioDuration));
+      const targetTime = formatTime(targetDuration);
+
+      // Read concat file to count videos
+      const concatContent = fs.readFileSync(concatFile, 'utf-8');
+      const videoCount = (concatContent.match(/^file /gm) || []).length;
+
+      const proc = ffmpeg();
+
+      // Add all video inputs from concat list
+      const videoFiles = concatContent
+        .split('\n')
+        .filter(line => line.startsWith('file '))
+        .map(line => line.replace(/^file '(.+)'$/, '$1'));
+
+      videoFiles.forEach(file => {
+        proc.input(file);
+      });
+
+      // Add black screen input
+      proc.input('color=c=black:s=1920x1080:r=30')
+        .inputOptions(['-f', 'lavfi', `-t ${audioTime}`]);
+
+      // Add audio input
+      proc.input(audioConcatFile)
+        .inputOptions(['-f', 'concat', '-safe', '0']);
+
+      // Build concat filter for videos + black screen
+      const blackIndex = videoFiles.length;
+      const audioIndex = videoFiles.length + 1;
+
+      const filterComplex = [
+        // Normalize all videos to same format
+        ...videoFiles.map((_, i) => `[${i}:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v${i}]`),
+        // Normalize black screen
+        `[${blackIndex}:v]scale=1920:1080,setsar=1,fps=30,format=yuv420p[vblack]`,
+        // Concat all videos + black screen
+        `${videoFiles.map((_, i) => `[v${i}]`).join('')}[vblack]concat=n=${videoCount + 1}:v=1:a=0[outv]`,
+        // Concat audio from videos + music audio
+        `${videoFiles.map((_, i) => `[${i}:a]`).join('')}[${audioIndex}:a]concat=n=${videoCount + 1}:v=0:a=1[outa]`
+      ];
+
+      proc.complexFilter(filterComplex)
+        .map('[outv]')
+        .map('[outa]')
+        .output(finalOutput)
         .outputOptions([
+          `-t ${targetTime}`,           // Exact duration
           `-b:v ${bitrate}M`,
           '-c:v libx264',
+          '-preset fast',
+          '-profile:v high',
+          '-level 4.2',
           '-c:a aac',
-          '-shortest'
+          '-b:a 192k',
+          '-ar 48000',                  // Standard audio sample rate
+          '-ac 2',                      // Stereo
+          '-pix_fmt yuv420p',           // Standard pixel format
+          '-movflags', '+faststart'     // Enable streaming
         ])
-        .output(outputFile)
+        .on('progress', (progress) => {
+          if (!progress.timemark) return;
+          const currentSeconds = this.parseTimeToSeconds(progress.timemark);
+          const percent = Math.min((currentSeconds / targetDuration) * 100, 100);
+          const uiProgress = 50 + Math.floor(percent * 0.5);
+          progressCallback({
+            stage: `Encoding final video: ${Math.floor(percent)}%`,
+            progress: Math.min(uiProgress, 99)
+          });
+        })
         .on('end', () => {
           this.ffmpegProcesses = this.ffmpegProcesses.filter(p => p !== proc);
-          resolve(outputFile);
+          resolve(finalOutput);
         })
         .on('error', (err) => {
           this.ffmpegProcesses = this.ffmpegProcesses.filter(p => p !== proc);
-          reject(new Error(`Audio video creation failed: ${err.message}`));
+          reject(new Error(`Final encoding failed: ${err.message}`));
         });
 
       this.ffmpegProcesses.push(proc);
@@ -345,96 +418,18 @@ class VideoProcessor {
     return durations;
   }
 
-  async createConcatenationList(processedVideos, audioVideo, videoDurations, audioVideoDuration, targetDuration, outputFolder, originalVideoFiles) {
-    const concatList = [];
-    const videoSequence = [];
-    let totalDuration = 0;
 
-    // Calculate total duration of all processed videos
-    const totalVideosDuration = Object.values(videoDurations).reduce((a, b) => a + b, 0);
-
-    if (totalVideosDuration === 0) {
-      throw new Error('No valid video durations found');
-    }
-
-    // Calculate how many times to loop all videos
-    const remainingDuration = targetDuration - audioVideoDuration;
-    const loopCount = Math.ceil(remainingDuration / totalVideosDuration);
-
-    // Add videos to concat list
-    for (let loop = 0; loop < loopCount; loop++) {
-      for (const video of processedVideos) {
-        concatList.push(video);
-        totalDuration += videoDurations[video];
-        
-        // Track original video filename
-        const processedIndex = processedVideos.indexOf(video);
-        if (processedIndex < originalVideoFiles.length) {
-          videoSequence.push({
-            order: videoSequence.length + 1,
-            filename: path.basename(originalVideoFiles[processedIndex]),
-            duration: videoDurations[video]
-          });
-        }
-
-        if (totalDuration >= remainingDuration) {
-          break;
-        }
-      }
-
-      if (totalDuration >= remainingDuration) {
-        break;
-      }
-    }
-
-    // Add audio video at the end
-    concatList.push(audioVideo);
-    totalDuration += audioVideoDuration;
-
-    // Create concat demuxer file
-    const concatFile = path.join(outputFolder, 'concat_list.txt');
-    const concatContent = concatList
-      .map(file => `file '${file.replace(/\\/g, '/')}'`)
-      .join('\n');
-
-    fs.writeFileSync(concatFile, concatContent);
-    this.tempFiles.push(concatFile);
-
-    return {
-      concatFile,
-      videoSequence,
-      totalDuration
-    };
-  }
-
-  concatenateVideos(concatFile, outputFolder, format) {
-    return new Promise((resolve, reject) => {
-      const finalOutput = path.join(outputFolder, `final_output.${format}`);
-
-      const proc = ffmpeg()
-        .input(concatFile)
-        .inputOptions(['-f', 'concat', '-safe', '0'])
-        .output(finalOutput)
-        .outputOptions(['-c', 'copy'])
-        .on('end', () => {
-          this.ffmpegProcesses = this.ffmpegProcesses.filter(p => p !== proc);
-          resolve(finalOutput);
-        })
-        .on('error', (err) => {
-          this.ffmpegProcesses = this.ffmpegProcesses.filter(p => p !== proc);
-          reject(new Error(`Concatenation failed: ${err.message}`));
-        });
-
-      this.ffmpegProcesses.push(proc);
-      proc.run();
-    });
-  }
 
   generateMetadataNote(outputFile, videoSequence, audioSequence, totalDuration, allVideoFiles, allAudioFiles) {
+    // Extract instance ID from output filename (e.g., final_output_1234567890_abc123xyz.mp4)
+    const basename = path.basename(outputFile);
+    const match = basename.match(/_([0-9]+_[a-z0-9]+)\./);
+    const processId = match ? match[1] : this.instanceId;
+
     const noteFile = outputFile.replace(/\.[^.]+$/, '.txt');
     const now = new Date();
-    const timestamp = now.toLocaleString('vi-VN');
-    
+    const timestampStr = now.toLocaleString('vi-VN');
+
     // Convert seconds to HH:MM:SS format
     const formatDuration = (seconds) => {
       const hours = Math.floor(seconds / 3600);
@@ -446,15 +441,16 @@ class VideoProcessor {
     let noteContent = '═══════════════════════════════════════════════════════════\n';
     noteContent += '                    THÔNG TIN VIDEO OUTPUT\n';
     noteContent += '═══════════════════════════════════════════════════════════\n\n';
-    
-    noteContent += `📅 Ngày tạo: ${timestamp}\n`;
-    noteContent += `📁 File output: ${path.basename(outputFile)}\n`;
+
+    noteContent += `📅 Ngày tạo: ${timestampStr}\n`;
+    noteContent += `📁 File output: ${basename}\n`;
+    noteContent += `🆔 Process ID: ${processId}\n`;
     noteContent += `⏱️  Tổng thời lượng: ${formatDuration(totalDuration)}\n\n`;
-    
+
     noteContent += '───────────────────────────────────────────────────────────\n';
     noteContent += '📹 THỨ TỰ VIDEO (Video Sequence)\n';
     noteContent += '───────────────────────────────────────────────────────────\n';
-    
+
     if (videoSequence.length > 0) {
       videoSequence.forEach((video, index) => {
         noteContent += `${index + 1}. ${video.filename}\n`;
@@ -463,11 +459,11 @@ class VideoProcessor {
     } else {
       noteContent += 'Không có video nào\n';
     }
-    
+
     noteContent += '\n───────────────────────────────────────────────────────────\n';
     noteContent += '🎵 THỨ TỰ BÀI HÁT (Audio Sequence)\n';
     noteContent += '───────────────────────────────────────────────────────────\n';
-    
+
     if (audioSequence && audioSequence.length > 0) {
       audioSequence.forEach((audio, index) => {
         noteContent += `${index + 1}. ${audio}\n`;
@@ -475,7 +471,7 @@ class VideoProcessor {
     } else {
       noteContent += 'Không có bài hát nào\n';
     }
-    
+
     noteContent += '\n───────────────────────────────────────────────────────────\n';
     noteContent += '📊 THỐNG KÊ\n';
     noteContent += '───────────────────────────────────────────────────────────\n';
