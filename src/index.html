@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Video Concatenation Tool - Công cụ ghép video chuyên nghiệp</title>
+  <meta name="description" content="Công cụ ghép video chuyên nghiệp với giao diện Electron, hỗ trợ xử lý đa luồng và định dạng video linh hoạt">
+  <link rel="stylesheet" href="index.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🎬 Video Concatenation Tool</h1>
+      <p class="subtitle">Công cụ ghép video chuyên nghiệp với xử lý đa luồng</p>
+    </header>
+
+    <div class="main-content">
+      <!-- Input 1: Video Configuration -->
+      <div class="card">
+        <div class="card-title">📁 Input 1: Video & Cấu hình</div>
+        
+        <div class="form-group">
+          <label for="videoFolder">Chọn thư mục chứa video:</label>
+          <div class="folder-selector">
+            <button class="btn-primary" id="selectVideoFolder">Chọn thư mục</button>
+            <div class="folder-path" id="videoFolderPath">Chưa chọn</div>
+          </div>
+          <div class="file-list" id="videoFileList"></div>
+        </div>
+
+        <div class="form-group">
+          <label for="videoFormat">Định dạng video:</label>
+          <select id="videoFormat">
+            <option value="mp4">MP4 (H.264)</option>
+            <option value="avi">AVI</option>
+            <option value="mkv">MKV</option>
+            <option value="mov">MOV</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="videoBitrate">Chất lượng video (Mbps):</label>
+          <input type="number" id="videoBitrate" min="1" max="50" value="5" placeholder="Nhập bitrate (1-50 Mbps)">
+        </div>
+
+        <div class="form-group">
+          <label for="threadCount">Số luồng xử lý:</label>
+          <input type="number" id="threadCount" min="1" max="16" value="2" placeholder="Nhập số luồng (1-16)">
+        </div>
+      </div>
+
+      <!-- Input 2: Audio Configuration -->
+      <div class="card">
+        <div class="card-title">🎵 Input 2: Audio & Số lượng</div>
+        
+        <div class="form-group">
+          <label for="audioFolder">Chọn thư mục chứa bài hát:</label>
+          <div class="folder-selector">
+            <button class="btn-primary" id="selectAudioFolder">Chọn thư mục</button>
+            <div class="folder-path" id="audioFolderPath">Chưa chọn</div>
+          </div>
+          <div class="file-list" id="audioFileList"></div>
+        </div>
+
+        <div class="form-group">
+          <label for="audioCount">Số lượng bài hát random:</label>
+          <input type="number" id="audioCount" min="1" max="100" value="5" placeholder="Nhập số lượng bài hát">
+        </div>
+
+        <div class="form-group">
+          <label for="outputFolder">Chọn thư mục lưu kết quả:</label>
+          <div class="folder-selector">
+            <button class="btn-primary" id="selectOutputFolder">Chọn thư mục</button>
+            <div class="folder-path" id="outputFolderPath">Chưa chọn</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Progress Section -->
+    <div class="progress-section hidden" id="progressSection">
+      <div class="progress-card">
+        <div class="progress-title">⚙️ Đang xử lý...</div>
+        
+        <div class="progress-stage">
+          <span id="progressStage">Chuẩn bị...</span>
+          <span class="progress-percentage" id="progressPercentage">0%</span>
+        </div>
+        
+        <div class="progress-bar-container">
+          <div class="progress-bar" id="progressBar"></div>
+        </div>
+
+        <div class="action-buttons">
+          <button class="btn-danger" id="cancelButton">Hủy xử lý</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Status Message -->
+    <div id="statusMessage"></div>
+
+    <!-- Action Buttons -->
+    <div class="action-buttons" id="actionButtons">
+      <button class="btn-primary" id="startButton">🚀 Bắt đầu xử lý</button>
+      <button class="btn-secondary" id="resetButton">🔄 Đặt lại</button>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
