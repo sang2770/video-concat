@@ -13,46 +13,33 @@
   "license": "ISC",
   "devDependencies": {
     "electron": "^27.0.0",
-    "electron-builder": "^26.8.1",
-    "fluent-ffmpeg": "^2.1.3"
+    "electron-builder": "^26.8.1"
   },
   "dependencies": {
-    "@ffprobe-installer/ffprobe": "^2.1.2",
-    "ffmpeg-static": "^5.3.0",
-    "fluent-ffmpeg": "^2.1.3",
-    "node-ffprobe": "^3.0.0"
+    "fluent-ffmpeg": "^2.1.3"
   },
   "build": {
     "appId": "com.video.concat",
-    "productName": "Video concat",
+    "productName": "Video Concat",
     "directories": {
       "output": "dist"
     },
     "files": [
       "main.js",
-      "config/**/*",
       "src/**/*",
-      "assets/**/*",
       "node_modules/**/*"
     ],
-    "asarUnpack": [
-      "node_modules/ffmpeg-static",
-      "node_modules/@ffprobe-installer"
+    "extraResources": [
+      {
+        "from": "runtime",
+        "to":   "runtime",
+        "filter": ["**/*"]
+      }
     ],
     "win": {
       "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "portable",
-          "arch": [
-            "x64"
-          ]
-        }
+        { "target": "nsis",     "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
       ]
     },
     "nsis": {
@@ -60,18 +47,10 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Video Concatenation Tool"
+      "shortcutName": "Video Concat"
     },
     "portable": {
       "artifactName": "${productName}-${version}-portable.exe"
-    },
-    "mac": {
-      "target": "dmg",
-      "icon": "assets/icon.icns"
-    },
-    "linux": {
-      "target": "AppImage",
-      "icon": "assets/icon.png"
     }
   }
 }

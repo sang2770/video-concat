@@ -1,6 +1,4 @@
 const ffmpeg = require('fluent-ffmpeg');
-const ffmpegPath = require('ffmpeg-static');
-const ffprobe = require('@ffprobe-installer/ffprobe');
 const path = require('path');
 const fs = require('fs');
 
@@ -29,8 +27,8 @@ class VideoProcessor {
 
   setupFFmpeg() {
     try {
-      ffmpeg.setFfmpegPath(ffmpegPath);
-      ffmpeg.setFfprobePath(ffprobe.path);
+      ffmpeg.setFfmpegPath(this.findFFmpeg());
+      ffmpeg.setFfprobePath(this.findFFprobe());
     } catch (error) {
       console.warn('FFmpeg path not found, using system default:', error.message);
     }
