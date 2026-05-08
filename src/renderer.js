@@ -439,6 +439,7 @@ function upsertJobCard(job) {
 }
 
 function buildCardHTML(job) {
+  console.log(job)
   const canCancel = job.status === 'pending' || job.status === 'running';
   const pct = job.progress || 0;
   const label = STATUS_LABEL[job.status] || job.status;
