@@ -2,14 +2,14 @@
 
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
-const fs   = require('fs');
-const { JobQueue }   = require('./src/jobQueue');
+const fs = require('fs');
+const { JobQueue } = require('./src/jobQueue');
 const { getSysInfo } = require('./src/sysInfo');
 const { ffmpegPath } = require('./src/ffmpegPath');
 const { ConfigStore } = require('./src/config');
 
 let mainWindow;
-let sysInfo     = null;
+let sysInfo = null;
 let configStore = null;
 
 const queue = new JobQueue({ concurrency: 1 });
@@ -21,9 +21,9 @@ function createWindow() {
     width: 1280,
     height: 960,
     webPreferences: {
-      preload:            path.join(__dirname, 'src/preload.js'),
-      contextIsolation:   true,
-      nodeIntegration:    false,
+      preload: path.join(__dirname, 'src/preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
       enableRemoteModule: false,
     }
   });
@@ -52,11 +52,11 @@ app.on('ready', () => {
     }
   };
 
-  queue.on('job-added',     d => forward('queue:job-added',     d));
-  queue.on('job-started',   d => forward('queue:job-started',   d));
-  queue.on('job-progress',  d => forward('queue:job-progress',  d));
-  queue.on('job-done',      d => forward('queue:job-done',      d));
-  queue.on('job-error',     d => forward('queue:job-error',     d));
+  queue.on('job-added', d => forward('queue:job-added', d));
+  queue.on('job-started', d => forward('queue:job-started', d));
+  queue.on('job-progress', d => forward('queue:job-progress', d));
+  queue.on('job-done', d => forward('queue:job-done', d));
+  queue.on('job-error', d => forward('queue:job-error', d));
   queue.on('job-cancelled', d => forward('queue:job-cancelled', d));
 });
 
@@ -79,7 +79,7 @@ ipcMain.handle('select-folder', async () => {
 
 ipcMain.handle('get-videos', async (_, folderPath) => {
   try {
-    const exts = new Set(['.mp4','.avi','.mkv','.mov','.flv','.wmv']);
+    const exts = new Set(['.mp4', '.avi', '.mkv', '.mov', '.flv', '.wmv']);
     return fs.readdirSync(folderPath)
       .filter(f => exts.has(path.extname(f).toLowerCase()));
   } catch (e) {
@@ -89,7 +89,7 @@ ipcMain.handle('get-videos', async (_, folderPath) => {
 
 ipcMain.handle('get-audio-files', async (_, folderPath) => {
   try {
-    const exts = new Set(['.mp3','.wav','.aac','.flac','.m4a','.ogg']);
+    const exts = new Set(['.mp3', '.wav', '.aac', '.flac', '.m4a', '.ogg']);
     return fs.readdirSync(folderPath)
       .filter(f => exts.has(path.extname(f).toLowerCase()));
   } catch (e) {
@@ -102,20 +102,34 @@ ipcMain.handle('get-sys-info', async () => sysInfo);
 
 // Thêm job vào queue → trả về jobId ngay lập tức
 ipcMain.handle('queue:add', async (_, config) => {
-  // Gắn encoder info vào config nếu renderer chọn dùng GPU
-  // config.useGpu: boolean — renderer gửi lên
+  // Chọn encoder dựa trên config
+  let selectedEncoder;
+
+  if (config.useGpu && config.selectedGpuId && sysInfo?.availableGpus) {
+    // Tìm GPU được chọn
+    selectedEncoder = sysInfo.availableGpus.find(gpu => gpu.id === config.selectedGpuId);
+    if (!selectedEncoder) {
+      // Fallback to first GPU if selected not found
+      selectedEncoder = sysInfo.availableGpus[0] || sysInfo.cpuEncoder;
+    }
+  } else if (config.useGpu && sysInfo?.gpuEncoder) {
+    // Backward compatibility - use first GPU
+    selectedEncoder = sysInfo.gpuEncoder;
+  } else {
+    // Use CPU encoder
+    selectedEncoder = sysInfo?.cpuEncoder;
+  }
+
   const resolvedConfig = {
     ...config,
-    // Truyền encoder object xuống worker
-    encoder: config.useGpu && sysInfo?.gpuEncoder
-      ? sysInfo.gpuEncoder
-      : sysInfo?.cpuEncoder,
-    // Clamp threadCount theo maxThreads của hệ thống
+    encoder: selectedEncoder,
+    // threadCount ở đây là số video xử lý song song
     threadCount: Math.min(
       config.threadCount || sysInfo?.defaultThreads || 2,
       sysInfo?.maxThreads || 16
     ),
   };
+
   const jobId = queue.add(resolvedConfig);
   return { jobId };
 });

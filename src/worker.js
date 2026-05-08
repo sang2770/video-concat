@@ -69,13 +69,20 @@ function probeFile(filePath) {
 
 // ─── ffmpeg ───────────────────────────────────────────────────────────────────
 let activeProc = null;
-parentPort.on("message", (msg) => {
-  if (msg === "cancel" && activeProc) {
-    try {
-      activeProc.kill("SIGKILL");
-    } catch (_) {}
+let isCancelled = false;
+
+const messageHandler = (msg) => {
+  if (msg === "cancel") {
+    isCancelled = true;
+    if (activeProc) {
+      try {
+        activeProc.kill("SIGKILL");
+      } catch (_) { }
+    }
   }
-});
+};
+
+parentPort.on("message", messageHandler);
 
 function runFFmpeg(args, targetDuration = 0, onProgress = null) {
   return new Promise((resolve, reject) => {
@@ -150,54 +157,54 @@ function buildEncoderArgs(encoder, bitrate, threads) {
 
 // ─── main logic ──────────────────────────────────────────────────────────────
 async function run() {
-  const {
-    id,
-    videoFolder,
-    audioFolder,
-    outputFolder,
-    videoFormat,
-    videoBitrate,
-    audioCount,
-    threadCount,
-    encoder,
-  } = job;
-
-  const activeEncoder = encoder || {
-    codec: "libx264",
-    vendor: "CPU",
-    preset: "fast",
-    extraArgs: [],
-  };
-  const instanceId = `${id}_${Date.now()}`;
-  const tempFiles = []; // Chỉ chứa các file tạm cần xóa
-
-  // Khởi tạo thư mục Output và Cache
-  const cacheFolder = path.join(outputFolder, ".cache_encoded");
-  if (!fs.existsSync(outputFolder))
-    fs.mkdirSync(outputFolder, { recursive: true });
-  if (!fs.existsSync(cacheFolder))
-    fs.mkdirSync(cacheFolder, { recursive: true });
-
-  const tmpTxt = (name) => {
-    const p = path.join(outputFolder, `${name}_${instanceId}.txt`);
-    tempFiles.push(p);
-    return p;
-  };
-  const tmpMp4 = (name) => {
-    const p = path.join(outputFolder, `${name}_${instanceId}.mp4`);
-    tempFiles.push(p);
-    return p;
-  };
-
-  const cleanup = () => {
-    for (const f of tempFiles) {
-      try {
-        if (fs.existsSync(f)) fs.unlinkSync(f);
-      } catch (_) {}
-    }
-  };
-
   try {
+    const {
+      id,
+      videoFolder,
+      audioFolder,
+      outputFolder,
+      videoFormat,
+      videoBitrate,
+      audioCount,
+      threadCount,
+      encoder,
+    } = job;
+
+    const activeEncoder = encoder || {
+      codec: "libx264",
+      vendor: "CPU",
+      preset: "fast",
+      extraArgs: [],
+    };
+    const instanceId = `${id}_${Date.now()}`;
+    const tempFiles = []; // Chỉ chứa các file tạm cần xóa
+
+    // Khởi tạo thư mục Output và Cache
+    const cacheFolder = path.join(outputFolder, ".cache_encoded");
+    if (!fs.existsSync(outputFolder))
+      fs.mkdirSync(outputFolder, { recursive: true });
+    if (!fs.existsSync(cacheFolder))
+      fs.mkdirSync(cacheFolder, { recursive: true });
+
+    const tmpTxt = (name) => {
+      const p = path.join(outputFolder, `${name}_${instanceId}.txt`);
+      tempFiles.push(p);
+      return p;
+    };
+    const tmpMp4 = (name) => {
+      const p = path.join(outputFolder, `${name}_${instanceId}.mp4`);
+      tempFiles.push(p);
+      return p;
+    };
+
+    const cleanup = () => {
+      for (const f of tempFiles) {
+        try {
+          if (fs.existsSync(f)) fs.unlinkSync(f);
+        } catch (_) { }
+      }
+    };
+
     // ── 1. Chuẩn bị File đầu vào ─────────────────────────────────────────────
     const videoExts = new Set([".mp4", ".avi", ".mkv", ".mov", ".flv", ".wmv"]);
     const audioExts = new Set([
@@ -238,11 +245,11 @@ async function run() {
     const vFormat = videoFormat.toLowerCase();
     const isAvi = vFormat === "avi";
     for (let i = 0; i < videoFiles.length; i++) {
+      if (isCancelled) throw new Error("Job đã bị huỷ");
+
       const v = videoFiles[i];
       const fileHash = getFileCacheHash(v);
 
-      // Tạo cache riêng cho từng định dạng để tránh xung đột
-      // Ví dụ: video1_hash.mp4, video1_hash.avi...
       const cachedFile = path.join(cacheFolder, `${fileHash}.${vFormat}`);
 
       if (fs.existsSync(cachedFile)) {
@@ -265,7 +272,6 @@ async function run() {
         "scale=1920:1080:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p",
         ...buildEncoderArgs(activeEncoder, videoBitrate, threadCount),
 
-        // CHỌN CODEC ÂM THANH PHÙ HỢP VỚI ĐỊNH DẠNG ĐẦU RA
         "-c:a",
         isAvi ? "libmp3lame" : "aac",
         "-b:a",
@@ -291,6 +297,8 @@ async function run() {
       currentProcessed++;
     }
 
+    if (isCancelled) throw new Error("Job đã bị huỷ");
+
     // ── 3. TẠO VIDEO ĐUÔI (Nền Đen + Nhạc Nền) BẰNG CPU ULTRAFAST ─────────────
     progress("Đang ráp phần nhạc cuối...", 72);
 
@@ -315,7 +323,7 @@ async function run() {
         .join("\n"),
     );
 
-    const tailFile = tmpMp4("tail_video"); // Video này dùng xong vứt, không cache
+    const tailFile = tmpMp4("tail_video");
     const tailArgs = [
       "-f",
       "concat",
@@ -333,8 +341,6 @@ async function run() {
       "0:a",
       "-vf",
       "format=yuv420p",
-
-      // ÉP DÙNG CPU ULTRAFAST (Tránh việc gửi màn hình đen qua lại GPU gây chậm)
       "-c:v",
       "libx264",
       "-preset",
@@ -343,7 +349,6 @@ async function run() {
       "100k",
       "-video_track_timescale",
       "90000",
-
       "-c:a",
       "aac",
       "-b:a",
@@ -359,6 +364,8 @@ async function run() {
     await runFFmpeg(tailArgs, totalAudioDuration, (pct) => {
       progress("Đang render phần đuôi đen...", 72 + Math.floor(pct * 15));
     });
+
+    if (isCancelled) throw new Error("Job đã bị huỷ");
 
     // ── 4. TÍNH TOÁN KỊCH BẢN GHÉP CUỐI CÙNG ──────────────────────────────────
     progress("Đang tính toán kịch bản...", 88);
@@ -402,9 +409,9 @@ async function run() {
 
     concatList.push(tailFile);
 
-    const masterConcatTxt = tmpTxt("master_concat");
+    const master_concatTxt = tmpTxt("master_concat");
     fs.writeFileSync(
-      masterConcatTxt,
+      master_concatTxt,
       concatList.map((f) => `file '${f.replace(/'/g, "'\\''")}'`).join("\n"),
     );
 
@@ -423,19 +430,20 @@ async function run() {
       "-safe",
       "0",
       "-i",
-      masterConcatTxt,
+      master_concatTxt,
       "-c",
-      "copy", // KHÔNG ENCODE NỮA, SAO CHÉP DÁN!
+      "copy",
       "-t",
       targetTime,
       "-y",
       finalOutput,
-      // ĐÃ XÓA -movflags +faststart TẠI ĐÂY GIÚP IO KHÔNG BỊ TẮC
     ];
 
     await runFFmpeg(finalArgs, TARGET, (pct) => {
       progress(`Đang ghi dữ liệu ổ cứng...`, 90 + Math.floor(pct * 8));
     });
+
+    if (isCancelled) throw new Error("Job đã bị huỷ");
 
     // ── 6. Hoàn tất ──────────────────────────────────────────────────────────
     progress("Hoàn tất!", 99);
@@ -463,7 +471,11 @@ async function run() {
     });
   } catch (err) {
     cleanup();
-    send({ type: "error", jobId: job.id, message: err.message });
+    if (!isCancelled) {
+      send({ type: "error", jobId: job.id, message: err.message });
+    }
+  } finally {
+    parentPort.off("message", messageHandler);
   }
 }
 
@@ -494,7 +506,7 @@ function generateNote(
   });
   try {
     fs.writeFileSync(noteFile, c, "utf-8");
-  } catch (_) {}
+  } catch (_) { }
 }
 
 run();

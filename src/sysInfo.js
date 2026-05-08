@@ -12,7 +12,7 @@
 
 'use strict';
 
-const os     = require('os');
+const os = require('os');
 const { spawnSync } = require('child_process');
 
 // ── CPU threads ───────────────────────────────────────────────────────────────
@@ -24,7 +24,7 @@ const { spawnSync } = require('child_process');
  */
 function getMaxThreads() {
   const logical = os.cpus().length;          // logical cores (hyperthreading)
-  const safe    = Math.max(1, logical - 1);  // để lại 1 core cho OS
+  const safe = Math.max(1, logical - 1);  // để lại 1 core cho OS
   return Math.min(safe, 16);
 }
 
@@ -44,63 +44,66 @@ function getDefaultThreads() {
  */
 const GPU_ENCODERS = [
   {
-    codec:       'h264_nvenc',
-    vendor:      'NVIDIA (NVENC)',
-    preset:      'p4',       // balanced quality
-    presetFast:  'p1',       // fastest (dùng khi chỉ cần append black screen)
-    extraArgs:   ['-rc', 'vbr', '-cq', '23'],  // use CQ instead of cq 0
+    codec: 'h264_nvenc',
+    vendor: 'NVIDIA (NVENC)',
+    preset: 'p4',       // balanced quality
+    presetFast: 'p1',       // fastest (dùng khi chỉ cần append black screen)
+    extraArgs: ['-rc', 'vbr', '-cq', '23'],  // use CQ instead of cq 0
   },
   {
-    codec:       'h264_amf',
-    vendor:      'AMD (AMF/VCE)',
-    preset:      'balanced',
-    presetFast:  'speed',
-    extraArgs:   [],
+    codec: 'h264_amf',
+    vendor: 'AMD (AMF/VCE)',
+    preset: 'balanced',
+    presetFast: 'speed',
+    extraArgs: [],
   },
   {
-    codec:       'h264_qsv',
-    vendor:      'Intel (Quick Sync)',
-    preset:      null,           // QSV doesn't use standard presets
-    presetFast:  null,           // use quality settings instead
-    extraArgs:   ['-global_quality', '23'],  // use global_quality for QSV
+    codec: 'h264_qsv',
+    vendor: 'Intel (Quick Sync)',
+    preset: null,           // QSV doesn't use standard presets
+    presetFast: null,           // use quality settings instead
+    extraArgs: ['-global_quality', '23'],  // use global_quality for QSV
   },
   {
-    codec:       'h264_videotoolbox',
-    vendor:      'Apple (VideoToolbox)',
-    preset:      null,       // không có -preset
-    presetFast:  null,
-    extraArgs:   [],
+    codec: 'h264_videotoolbox',
+    vendor: 'Apple (VideoToolbox)',
+    preset: null,       // không có -preset
+    presetFast: null,
+    extraArgs: [],
   },
 ];
 
 const CPU_ENCODER = {
-  codec:      'libx264',
-  vendor:     'CPU (libx264)',
-  preset:     'fast',
+  codec: 'libx264',
+  vendor: 'CPU (libx264)',
+  preset: 'fast',
   presetFast: 'ultrafast',
-  extraArgs:  [],
+  extraArgs: [],
 };
 
 /**
- * Detect GPU encoder khả dụng bằng cách:
+ * Detect TẤT CẢ GPU encoder khả dụng bằng cách:
  * 1. Chạy `ffmpeg -encoders` để lấy danh sách encoder được compile vào binary
  * 2. Thử encode 1 frame test với từng GPU encoder (xác nhận driver hoạt động)
  *
  * @param {string} ffmpegPath
- * @returns {{ codec, vendor, preset, extraArgs } | null}  null = không có GPU
+ * @returns {Array<{ codec, vendor, preset, extraArgs, id }>}  Mảng các GPU khả dụng
  */
-function detectGpuEncoder(ffmpegPath) {
+function detectAllGpuEncoders(ffmpegPath) {
   // Bước 1: lấy danh sách encoder compiled-in
   let encoderList = '';
   try {
     const result = spawnSync(ffmpegPath, ['-encoders', '-v', 'quiet'], {
       encoding: 'utf-8',
-      timeout:  5000,
+      timeout: 5000,
     });
     encoderList = (result.stdout || '') + (result.stderr || '');
   } catch (_) {
-    return null;
+    return [];
   }
+
+  const availableGpus = [];
+  let gpuIndex = 0;
 
   // Bước 2: với mỗi GPU encoder có trong list, thử encode 1 frame
   for (const enc of GPU_ENCODERS) {
@@ -120,18 +123,33 @@ function detectGpuEncoder(ffmpegPath) {
     try {
       const test = spawnSync(ffmpegPath, testArgs, {
         encoding: 'utf-8',
-        timeout:  8000,
+        timeout: 8000,
       });
       // exit 0 và không có error output = encoder hoạt động
       if (test.status === 0 && !(test.stderr || '').toLowerCase().includes('error')) {
-        return enc;
+        availableGpus.push({
+          ...enc,
+          id: `gpu-${gpuIndex}`,
+          displayName: `${enc.vendor} (${enc.codec})`,
+        });
+        gpuIndex++;
       }
     } catch (_) {
       // encoder này không dùng được, thử cái tiếp theo
     }
   }
 
-  return null; // không có GPU encoder nào hoạt động
+  return availableGpus;
+}
+
+/**
+ * Detect GPU encoder khả dụng (trả về GPU đầu tiên - backward compatibility)
+ * @param {string} ffmpegPath
+ * @returns {{ codec, vendor, preset, extraArgs } | null}  null = không có GPU
+ */
+function detectGpuEncoder(ffmpegPath) {
+  const gpus = detectAllGpuEncoders(ffmpegPath);
+  return gpus.length > 0 ? gpus[0] : null;
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
@@ -152,16 +170,18 @@ function detectGpuEncoder(ffmpegPath) {
  */
 function getSysInfo(ffmpegPath) {
   const cpus = os.cpus();
-  const gpuEncoder = detectGpuEncoder(ffmpegPath);
+  const availableGpus = detectAllGpuEncoders(ffmpegPath);
+  const gpuEncoder = availableGpus.length > 0 ? availableGpus[0] : null;
 
   return {
-    cpuModel:       cpus[0]?.model || 'Unknown CPU',
-    logicalCores:   cpus.length,
-    maxThreads:     getMaxThreads(),
+    cpuModel: cpus[0]?.model || 'Unknown CPU',
+    logicalCores: cpus.length,
+    maxThreads: getMaxThreads(),
     defaultThreads: getDefaultThreads(),
-    gpuEncoder,          // null nếu không có GPU
-    cpuEncoder:     CPU_ENCODER,
-    platform:       process.platform,
+    gpuEncoder,          // GPU đầu tiên (backward compatibility)
+    availableGpus,       // Tất cả GPU khả dụng
+    cpuEncoder: CPU_ENCODER,
+    platform: process.platform,
   };
 }
 

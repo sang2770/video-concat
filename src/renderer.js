@@ -4,33 +4,34 @@
 const selectVideoFolderBtn = document.getElementById('selectVideoFolder');
 const selectAudioFolderBtn = document.getElementById('selectAudioFolder');
 const selectOutputFolderBtn = document.getElementById('selectOutputFolder');
-const videoFolderPath  = document.getElementById('videoFolderPath');
-const audioFolderPath  = document.getElementById('audioFolderPath');
+const videoFolderPath = document.getElementById('videoFolderPath');
+const audioFolderPath = document.getElementById('audioFolderPath');
 const outputFolderPath = document.getElementById('outputFolderPath');
-const videoFileList    = document.getElementById('videoFileList');
-const audioFileList    = document.getElementById('audioFileList');
-const videoFormat      = document.getElementById('videoFormat');
-const videoBitrate     = document.getElementById('videoBitrate');
-const audioCount       = document.getElementById('audioCount');
-const targetHH         = document.getElementById('targetHH');
-const targetMM         = document.getElementById('targetMM');
-const targetSS         = document.getElementById('targetSS');
-const targetHint       = document.getElementById('targetHint');
-const threadCount      = document.getElementById('threadCount');
-const addJobBtn        = document.getElementById('addJobBtn');
-const cancelAllBtn     = document.getElementById('cancelAllBtn');
-const resetBtn         = document.getElementById('resetButton');
-const statusMessage    = document.getElementById('statusMessage');
-const queueContainer   = document.getElementById('queueContainer');
-const queueList        = document.getElementById('queueList');
-const emptyQueue       = document.getElementById('emptyQueue');
-const useGpuToggle     = document.getElementById('useGpuToggle');
-const gpuEncoderBadge  = document.getElementById('gpuEncoderBadge');
-const gpuHint          = document.getElementById('gpuHint');
+const videoFileList = document.getElementById('videoFileList');
+const audioFileList = document.getElementById('audioFileList');
+const videoFormat = document.getElementById('videoFormat');
+const videoBitrate = document.getElementById('videoBitrate');
+const audioCount = document.getElementById('audioCount');
+const targetHH = document.getElementById('targetHH');
+const targetMM = document.getElementById('targetMM');
+const targetSS = document.getElementById('targetSS');
+const targetHint = document.getElementById('targetHint');
+const threadCount = document.getElementById('threadCount');
+const addJobBtn = document.getElementById('addJobBtn');
+const cancelAllBtn = document.getElementById('cancelAllBtn');
+const resetBtn = document.getElementById('resetButton');
+const statusMessage = document.getElementById('statusMessage');
+const queueContainer = document.getElementById('queueContainer');
+const queueList = document.getElementById('queueList');
+const emptyQueue = document.getElementById('emptyQueue');
+const useGpuToggle = document.getElementById('useGpuToggle');
+const gpuEncoderBadge = document.getElementById('gpuEncoderBadge');
+const gpuHint = document.getElementById('gpuHint');
+const gpuSelector = document.getElementById('gpuSelector');
 const threadCountLabel = document.getElementById('threadCountLabel');
-const sysInfoCpuText   = document.getElementById('sysInfoCpuText');
-const sysInfoGpuText   = document.getElementById('sysInfoGpuText');
-const sysInfoThreadText= document.getElementById('sysInfoThreadText');
+const sysInfoCpuText = document.getElementById('sysInfoCpuText');
+const sysInfoGpuText = document.getElementById('sysInfoGpuText');
+const sysInfoThreadText = document.getElementById('sysInfoThreadText');
 
 // ── State ─────────────────────────────────────────────────────────────────────
 const state = {
@@ -70,30 +71,43 @@ function applySysInfo(info) {
     `${info.cpuModel} · ${info.logicalCores} cores`;
 
   // Thread input: clamp max + set default
-  threadCount.max   = String(info.maxThreads);
+  threadCount.max = String(info.maxThreads);
   threadCount.value = String(info.defaultThreads);
-  threadCountLabel.textContent = `(tối đa ${info.maxThreads} theo hệ thống)`;
+  threadCountLabel.textContent = `(số video xử lý song song, tối đa ${info.maxThreads})`;
   sysInfoThreadText.textContent =
-    `Threads: mặc định ${info.defaultThreads} / tối đa ${info.maxThreads}`;
+    `Luồng: mặc định ${info.defaultThreads} / tối đa ${info.maxThreads}`;
 
   // GPU info
-  if (info.gpuEncoder) {
-    const enc = info.gpuEncoder;
-    sysInfoGpuText.textContent = `GPU: ${enc.vendor} (${enc.codec})`;
-    gpuEncoderBadge.textContent = enc.vendor;
-    gpuEncoderBadge.className   = 'gpu-badge gpu-available';
-    useGpuToggle.disabled       = false;
-    useGpuToggle.checked        = true;   // bật GPU mặc định nếu có
-    gpuHint.textContent         = `✅ Sẽ dùng ${enc.codec} — encode nhanh hơn đáng kể`;
-    gpuHint.className           = 'gpu-hint gpu-hint-ok';
+  if (info.availableGpus && info.availableGpus.length > 0) {
+    const gpus = info.availableGpus;
+    sysInfoGpuText.textContent = `GPU: ${gpus.length} encoder khả dụng`;
+    gpuEncoderBadge.textContent = `${gpus.length} GPU`;
+    gpuEncoderBadge.className = 'gpu-badge gpu-available';
+    useGpuToggle.disabled = false;
+    useGpuToggle.checked = true;
+
+    // Populate GPU selector
+    gpuSelector.innerHTML = '';
+    gpus.forEach((gpu, index) => {
+      const option = document.createElement('option');
+      option.value = gpu.id;
+      option.textContent = gpu.displayName;
+      if (index === 0) option.selected = true;
+      gpuSelector.appendChild(option);
+    });
+    gpuSelector.disabled = false;
+
+    gpuHint.textContent = `✅ Sẽ dùng ${gpus[0].codec} — encode nhanh hơn đáng kể`;
+    gpuHint.className = 'gpu-hint gpu-hint-ok';
   } else {
     sysInfoGpuText.textContent = 'GPU: Không phát hiện encoder phần cứng';
     gpuEncoderBadge.textContent = 'Không có GPU';
-    gpuEncoderBadge.className   = 'gpu-badge gpu-none';
-    useGpuToggle.disabled       = true;
-    useGpuToggle.checked        = false;
-    gpuHint.textContent         = 'Sẽ dùng libx264 (CPU)';
-    gpuHint.className           = 'gpu-hint';
+    gpuEncoderBadge.className = 'gpu-badge gpu-none';
+    useGpuToggle.disabled = true;
+    useGpuToggle.checked = false;
+    gpuSelector.disabled = true;
+    gpuHint.textContent = 'Sẽ dùng libx264 (CPU)';
+    gpuHint.className = 'gpu-hint';
   }
 }
 
@@ -103,18 +117,18 @@ function applyConfig(cfg) {
   if (!cfg) return;
 
   // Folders
-  if (cfg.videoFolder)  { state.videoFolder  = cfg.videoFolder;  videoFolderPath.textContent  = cfg.videoFolder; }
-  if (cfg.audioFolder)  { state.audioFolder  = cfg.audioFolder;  audioFolderPath.textContent  = cfg.audioFolder; }
+  if (cfg.videoFolder) { state.videoFolder = cfg.videoFolder; videoFolderPath.textContent = cfg.videoFolder; }
+  if (cfg.audioFolder) { state.audioFolder = cfg.audioFolder; audioFolderPath.textContent = cfg.audioFolder; }
   if (cfg.outputFolder) { state.outputFolder = cfg.outputFolder; outputFolderPath.textContent = cfg.outputFolder; }
 
   // Reload file lists nếu folder đã lưu còn tồn tại
-  if (cfg.videoFolder)  window.api.getVideos(cfg.videoFolder).then(f => { if (!f.error) { state.videoFiles = f; renderFileList(videoFileList, f); } });
-  if (cfg.audioFolder)  window.api.getAudioFiles(cfg.audioFolder).then(f => { if (!f.error) { state.audioFiles = f; renderFileList(audioFileList, f); } });
+  if (cfg.videoFolder) window.api.getVideos(cfg.videoFolder).then(f => { if (!f.error) { state.videoFiles = f; renderFileList(videoFileList, f); } });
+  if (cfg.audioFolder) window.api.getAudioFiles(cfg.audioFolder).then(f => { if (!f.error) { state.audioFiles = f; renderFileList(audioFileList, f); } });
 
   // Form fields
-  if (cfg.videoFormat)  videoFormat.value  = cfg.videoFormat;
+  if (cfg.videoFormat) videoFormat.value = cfg.videoFormat;
   if (cfg.videoBitrate) videoBitrate.value = String(cfg.videoBitrate);
-  if (cfg.audioCount)   audioCount.value   = String(cfg.audioCount);
+  if (cfg.audioCount) audioCount.value = String(cfg.audioCount);
 
   // Target duration
   if (cfg.targetDuration > 0) {
@@ -147,29 +161,46 @@ function saveConfig() {
   clearTimeout(_saveTimer);
   _saveTimer = setTimeout(() => {
     window.api.configSet({
-      videoFolder:    state.videoFolder,
-      audioFolder:    state.audioFolder,
-      outputFolder:   state.outputFolder,
-      videoFormat:    videoFormat.value,
-      videoBitrate:   parseInt(videoBitrate.value) || 5,
-      audioCount:     parseInt(audioCount.value)   || 5,
+      videoFolder: state.videoFolder,
+      audioFolder: state.audioFolder,
+      outputFolder: state.outputFolder,
+      videoFormat: videoFormat.value,
+      videoBitrate: parseInt(videoBitrate.value) || 5,
+      audioCount: parseInt(audioCount.value) || 5,
       targetDuration: getTargetSeconds(),
-      threadCount:    parseInt(threadCount.value)  || 2,
-      useGpu:         useGpuToggle.checked && !useGpuToggle.disabled,
+      threadCount: parseInt(threadCount.value) || 2,
+      useGpu: useGpuToggle.checked && !useGpuToggle.disabled,
     });
   }, 500);
 }
 
-// ── Cập nhật hint khi toggle GPU
+// ── Cập nhật hint khi toggle GPU hoặc chọn GPU
 useGpuToggle.addEventListener('change', () => {
   const info = state.sysInfo;
   if (!info) return;
-  if (useGpuToggle.checked && info.gpuEncoder) {
-    gpuHint.textContent = `✅ Sẽ dùng ${info.gpuEncoder.codec} — encode nhanh hơn đáng kể`;
-    gpuHint.className   = 'gpu-hint gpu-hint-ok';
+  if (useGpuToggle.checked && info.availableGpus && info.availableGpus.length > 0) {
+    const selectedGpuId = gpuSelector.value;
+    const selectedGpu = info.availableGpus.find(g => g.id === selectedGpuId) || info.availableGpus[0];
+    gpuHint.textContent = `✅ Sẽ dùng ${selectedGpu.codec} — encode nhanh hơn đáng kể`;
+    gpuHint.className = 'gpu-hint gpu-hint-ok';
+    gpuSelector.disabled = false;
   } else {
     gpuHint.textContent = 'Sẽ dùng libx264 (CPU)';
-    gpuHint.className   = 'gpu-hint';
+    gpuHint.className = 'gpu-hint';
+    gpuSelector.disabled = true;
+  }
+  saveConfig();
+});
+
+// Cập nhật hint khi chọn GPU khác
+gpuSelector.addEventListener('change', () => {
+  const info = state.sysInfo;
+  if (!info || !useGpuToggle.checked) return;
+  const selectedGpuId = gpuSelector.value;
+  const selectedGpu = info.availableGpus.find(g => g.id === selectedGpuId);
+  if (selectedGpu) {
+    gpuHint.textContent = `✅ Sẽ dùng ${selectedGpu.codec} — encode nhanh hơn đáng kể`;
+    gpuHint.className = 'gpu-hint gpu-hint-ok';
   }
   saveConfig();
 });
@@ -196,17 +227,17 @@ function formatHMS(totalSec) {
   const h = Math.floor(totalSec / 3600);
   const m = Math.floor((totalSec % 3600) / 60);
   const s = totalSec % 60;
-  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
 function updateTargetHint() {
   const secs = getTargetSeconds();
   if (secs <= 0) {
     targetHint.textContent = '⚠️ Thời lượng phải > 0';
-    targetHint.className   = 'target-hint target-hint-warn';
+    targetHint.className = 'target-hint target-hint-warn';
   } else {
     targetHint.textContent = `⏱️ ${formatHMS(secs)} = ${secs} giây`;
-    targetHint.className   = 'target-hint';
+    targetHint.className = 'target-hint';
   }
 }
 
@@ -214,7 +245,7 @@ function updateTargetHint() {
   el.addEventListener('input', updateTargetHint);
   el.addEventListener('change', () => {
     const max = 59;
-    el.value  = el === targetHH ? String(Math.max(0, parseInt(el.value) || 0)) : String(Math.max(0, Math.min(max, parseInt(el.value) || 0)));
+    el.value = el === targetHH ? String(Math.max(0, parseInt(el.value) || 0)) : String(Math.max(0, Math.min(max, parseInt(el.value) || 0)));
     updateTargetHint();
     saveConfig();
   });
@@ -226,11 +257,17 @@ function updateTargetHint() {
 });
 
 // ── Queue event listeners ─────────────────────────────────────────────────────
-window.api.onJobAdded(    job => { upsertJobCard(job); updateQueueVisibility(); });
-window.api.onJobStarted(  job => { upsertJobCard(job); });
-window.api.onJobProgress( job => { upsertJobCard(job); });
-window.api.onJobDone(     job => { upsertJobCard(job); showStatus(`✅ Job #${job.id} hoàn thành: ${job.result?.outputFile || ''}`, 'success'); });
-window.api.onJobError(    job => { upsertJobCard(job); showStatus(`❌ Job #${job.id} lỗi: ${job.error}`, 'error'); });
+window.api.onJobAdded(job => { upsertJobCard(job); updateQueueVisibility(); });
+window.api.onJobStarted(job => { upsertJobCard(job); });
+window.api.onJobProgress(job => { upsertJobCard(job); });
+window.api.onJobDone(job => {
+  upsertJobCard(job);
+  const msg = job.result?.completedVideos
+    ? `✅ Job #${job.id} hoàn thành: ${job.result.completedVideos}/${job.result.totalVideos} video`
+    : `✅ Job #${job.id} hoàn thành`;
+  showStatus(msg, 'success');
+});
+window.api.onJobError(job => { upsertJobCard(job); showStatus(`❌ Job #${job.id} lỗi: ${job.error}`, 'error'); });
 window.api.onJobCancelled(job => { upsertJobCard(job); });
 
 // ── Folder selection ──────────────────────────────────────────────────────────
@@ -272,19 +309,20 @@ addJobBtn.addEventListener('click', async () => {
   if (errors.length) return showStatus(errors.join('\n'), 'error');
 
   const config = {
-    videoFolder:    state.videoFolder,
-    audioFolder:    state.audioFolder,
-    outputFolder:   state.outputFolder,
-    videoFormat:    videoFormat.value,
-    videoBitrate:   parseInt(videoBitrate.value),
-    audioCount:     parseInt(audioCount.value),
+    videoFolder: state.videoFolder,
+    audioFolder: state.audioFolder,
+    outputFolder: state.outputFolder,
+    videoFormat: videoFormat.value,
+    videoBitrate: parseInt(videoBitrate.value),
+    audioCount: parseInt(audioCount.value),
     targetDuration: getTargetSeconds(),
-    threadCount:    parseInt(threadCount.value),
-    useGpu:         useGpuToggle.checked && !useGpuToggle.disabled,
+    threadCount: parseInt(threadCount.value),
+    useGpu: useGpuToggle.checked && !useGpuToggle.disabled,
+    selectedGpuId: gpuSelector.value, // ID của GPU được chọn
   };
 
   const { jobId } = await window.api.queueAdd(config);
-  showStatus(`📋 Đã thêm Job #${jobId} vào hàng đợi`, 'info');
+  showStatus(`📋 Đã thêm Job #${jobId} vào hàng đợi (${state.videoFiles.length} video sẽ được xử lý)`, 'info');
 });
 
 // ── Cancel all ────────────────────────────────────────────────────────────────
@@ -295,31 +333,31 @@ cancelAllBtn.addEventListener('click', async () => {
 // ── Reset form ────────────────────────────────────────────────────────────────
 resetBtn.addEventListener('click', () => {
   state.videoFolder = state.audioFolder = state.outputFolder = null;
-  state.videoFiles  = state.audioFiles  = [];
-  videoFolderPath.textContent  = 'Chưa chọn';
-  audioFolderPath.textContent  = 'Chưa chọn';
+  state.videoFiles = state.audioFiles = [];
+  videoFolderPath.textContent = 'Chưa chọn';
+  audioFolderPath.textContent = 'Chưa chọn';
   outputFolderPath.textContent = 'Chưa chọn';
   videoFileList.innerHTML = '';
   audioFileList.innerHTML = '';
-  videoFormat.value   = 'mp4';
-  videoBitrate.value  = '5';
-  audioCount.value    = '5';
-  targetHH.value      = '0';
-  targetMM.value      = '20';
-  targetSS.value      = '59';
+  videoFormat.value = 'mp4';
+  videoBitrate.value = '5';
+  audioCount.value = '5';
+  targetHH.value = '0';
+  targetMM.value = '20';
+  targetSS.value = '59';
   updateTargetHint();
-  threadCount.value   = '2';
+  threadCount.value = '2';
   statusMessage.innerHTML = '';
 });
 
 // ── Validation ────────────────────────────────────────────────────────────────
 function validate() {
   const errs = [];
-  if (!state.videoFolder)        errs.push('Vui lòng chọn thư mục video');
-  if (!state.audioFolder)        errs.push('Vui lòng chọn thư mục audio');
-  if (!state.outputFolder)       errs.push('Vui lòng chọn thư mục lưu kết quả');
-  if (!state.videoFiles.length)  errs.push('Thư mục video không chứa file video');
-  if (!state.audioFiles.length)  errs.push('Thư mục audio không chứa file audio');
+  if (!state.videoFolder) errs.push('Vui lòng chọn thư mục video');
+  if (!state.audioFolder) errs.push('Vui lòng chọn thư mục audio');
+  if (!state.outputFolder) errs.push('Vui lòng chọn thư mục lưu kết quả');
+  if (!state.videoFiles.length) errs.push('Thư mục video không chứa file video');
+  if (!state.audioFiles.length) errs.push('Thư mục audio không chứa file audio');
 
   const br = parseInt(videoBitrate.value);
   if (isNaN(br) || br < 1 || br > 50) errs.push('Bitrate phải từ 1–50 Mbps');
@@ -339,18 +377,18 @@ function validate() {
 
 // ── Job card UI ───────────────────────────────────────────────────────────────
 const STATUS_LABEL = {
-  pending:   '⏳ Đang chờ',
-  running:   '⚙️ Đang xử lý',
-  done:      '✅ Hoàn thành',
-  error:     '❌ Lỗi',
+  pending: '⏳ Đang chờ',
+  running: '⚙️ Đang xử lý',
+  done: '✅ Hoàn thành',
+  error: '❌ Lỗi',
   cancelled: '🚫 Đã huỷ',
 };
 
 const STATUS_CLASS = {
-  pending:   'job-pending',
-  running:   'job-running',
-  done:      'job-done',
-  error:     'job-error',
+  pending: 'job-pending',
+  running: 'job-running',
+  done: 'job-done',
+  error: 'job-error',
   cancelled: 'job-cancelled',
 };
 
@@ -386,9 +424,52 @@ function upsertJobCard(job) {
 
 function buildCardHTML(job) {
   const canCancel = job.status === 'pending' || job.status === 'running';
-  const pct       = job.progress || 0;
-  const label     = STATUS_LABEL[job.status] || job.status;
-  const cfg       = job.config || {};
+  const pct = job.progress || 0;
+  const label = STATUS_LABEL[job.status] || job.status;
+  const cfg = job.config || {};
+
+  // Hiển thị thông tin tasks nếu có
+  let tasksHTML = '';
+  if (job.tasks && job.tasks.length > 0) {
+    tasksHTML = `
+      <div class="job-tasks-summary">
+        <strong>📊 Tiến độ:</strong> ${job.completedTasks || 0}/${job.totalTasks || 0} video hoàn thành
+        ${job.failedTasks > 0 ? `<span class="task-failed">(${job.failedTasks} lỗi)</span>` : ''}
+      </div>
+    `;
+
+    // Hiển thị chi tiết các task đang chạy
+    const runningTasks = job.tasks.filter(t => t.status === 'running');
+    if (runningTasks.length > 0) {
+      tasksHTML += '<div class="job-tasks-detail">';
+      runningTasks.forEach(task => {
+        tasksHTML += `
+          <div class="task-item">
+            <span class="task-name">🎬 ${task.videoFile}</span>
+            <span class="task-progress">${task.progress || 0}%</span>
+            <div class="task-stage">${task.stage || ''}</div>
+          </div>
+        `;
+      });
+      tasksHTML += '</div>';
+    }
+  }
+
+  // Hiển thị output files nếu hoàn thành
+  let outputHTML = '';
+  if (job.status === 'done' && job.result?.outputs && job.result.outputs.length > 0) {
+    outputHTML = `
+      <div class="job-outputs">
+        <strong>📹 Output files (${job.result.outputs.length}):</strong>
+        <div class="output-list">
+          ${job.result.outputs.map(f => {
+      const fileName = f.split(/[\\/]/).pop();
+      return `<div class="output-item">${fileName}</div>`;
+    }).join('')}
+        </div>
+      </div>
+    `;
+  }
 
   return `
     <div class="job-header">
@@ -406,17 +487,17 @@ function buildCardHTML(job) {
       </span>
     </div>
     <div class="job-stage">${job.stage || ''}</div>
+    ${tasksHTML}
     <div class="job-progress-bar-wrap">
       <div class="job-progress-bar" style="width:${pct}%"></div>
     </div>
     <div class="job-progress-pct">${pct}%</div>
-    ${job.status === 'done' && job.result?.outputFile
-      ? `<div class="job-output">📹 ${job.result.outputFile}</div>`
-      : ''}
+    ${outputHTML}
     ${job.status === 'error'
       ? `<div class="job-error-msg">⚠️ ${job.error}</div>`
       : ''}
   `;
+}
 }
 
 function shortPath(p) {

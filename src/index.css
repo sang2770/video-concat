@@ -45,6 +45,7 @@ header {
     opacity: 0;
     transform: translateY(-30px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -81,6 +82,7 @@ h1 {
     opacity: 0;
     transform: translateY(20px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -348,6 +350,7 @@ select {
     opacity: 0;
     transform: translateY(10px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -414,7 +417,7 @@ select {
 }
 
 
-select option{
+select option {
   background-color: rgba(15, 23, 42, 0.5);
 }
 
@@ -458,10 +461,22 @@ select option{
   animation: fadeIn 0.3s ease-out;
 }
 
-.job-card.job-running  { border-color: var(--primary); }
-.job-card.job-done     { border-color: var(--success); }
-.job-card.job-error    { border-color: var(--danger); }
-.job-card.job-cancelled{ border-color: var(--text-tertiary); opacity: 0.6; }
+.job-card.job-running {
+  border-color: var(--primary);
+}
+
+.job-card.job-done {
+  border-color: var(--success);
+}
+
+.job-card.job-error {
+  border-color: var(--danger);
+}
+
+.job-card.job-cancelled {
+  border-color: var(--text-tertiary);
+  opacity: 0.6;
+}
 
 .job-header {
   display: flex;
@@ -480,13 +495,29 @@ select option{
   padding: 3px 10px;
   border-radius: 20px;
   font-weight: 600;
-  background: rgba(99,102,241,0.15);
+  background: rgba(99, 102, 241, 0.15);
   color: var(--primary-light);
 }
-.job-status-badge.job-running   { background: rgba(99,102,241,0.2); color: var(--primary-light); }
-.job-status-badge.job-done      { background: rgba(16,185,129,0.15); color: #6ee7b7; }
-.job-status-badge.job-error     { background: rgba(239,68,68,0.15);  color: #fca5a5; }
-.job-status-badge.job-cancelled { background: rgba(148,163,184,0.1); color: var(--text-tertiary); }
+
+.job-status-badge.job-running {
+  background: rgba(99, 102, 241, 0.2);
+  color: var(--primary-light);
+}
+
+.job-status-badge.job-done {
+  background: rgba(16, 185, 129, 0.15);
+  color: #6ee7b7;
+}
+
+.job-status-badge.job-error {
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+}
+
+.job-status-badge.job-cancelled {
+  background: rgba(148, 163, 184, 0.1);
+  color: var(--text-tertiary);
+}
 
 .job-cancel-btn {
   margin-left: auto;
@@ -513,7 +544,7 @@ select option{
 .job-progress-bar-wrap {
   width: 100%;
   height: 6px;
-  background: rgba(15,23,42,0.6);
+  background: rgba(15, 23, 42, 0.6);
   border-radius: 3px;
   overflow: hidden;
   margin-bottom: 4px;
@@ -523,7 +554,7 @@ select option{
   height: 100%;
   background: linear-gradient(90deg, var(--primary) 0%, var(--secondary) 100%);
   transition: width 0.4s ease;
-  box-shadow: 0 0 8px rgba(99,102,241,0.4);
+  box-shadow: 0 0 8px rgba(99, 102, 241, 0.4);
 }
 
 .job-progress-pct {
@@ -619,15 +650,15 @@ select option{
   transition: transform 0.3s;
 }
 
-.toggle-switch input:checked + .toggle-slider {
+.toggle-switch input:checked+.toggle-slider {
   background: var(--primary);
 }
 
-.toggle-switch input:checked + .toggle-slider::before {
+.toggle-switch input:checked+.toggle-slider::before {
   transform: translateX(20px);
 }
 
-.toggle-switch input:disabled + .toggle-slider {
+.toggle-switch input:disabled+.toggle-slider {
   opacity: 0.4;
   cursor: not-allowed;
 }
@@ -728,4 +759,108 @@ select option{
 
 .target-hint.target-hint-warn {
   color: var(--warning);
+}
+
+/* GPU Selector */
+#gpuSelector {
+  width: 100%;
+  padding: 10px 15px;
+  margin-top: 10px;
+  background: var(--dark-surface);
+  border: 1px solid var(--dark-border);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 0.95em;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+#gpuSelector:hover:not(:disabled) {
+  border-color: var(--primary);
+}
+
+#gpuSelector:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Job Tasks Display */
+.job-tasks-summary {
+  margin: 15px 0;
+  padding: 10px 15px;
+  background: rgba(99, 102, 241, 0.1);
+  border-left: 3px solid var(--primary);
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+.task-failed {
+  color: var(--danger);
+  margin-left: 10px;
+  font-weight: 600;
+}
+
+.job-tasks-detail {
+  margin: 10px 0;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.task-item {
+  padding: 8px 12px;
+  margin: 5px 0;
+  background: rgba(30, 41, 59, 0.5);
+  border-radius: 6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.85em;
+}
+
+.task-name {
+  flex: 1;
+  color: var(--text-secondary);
+}
+
+.task-progress {
+  margin-left: 10px;
+  color: var(--primary-light);
+  font-weight: 600;
+}
+
+.task-stage {
+  width: 100%;
+  margin-top: 5px;
+  font-size: 0.8em;
+  color: var(--text-tertiary);
+}
+
+.job-outputs {
+  margin: 15px 0;
+  padding: 10px 15px;
+  background: rgba(16, 185, 129, 0.1);
+  border-left: 3px solid var(--success);
+  border-radius: 4px;
+}
+
+.output-list {
+  margin-top: 8px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.output-item {
+  padding: 5px 10px;
+  margin: 3px 0;
+  background: rgba(30, 41, 59, 0.5);
+  border-radius: 4px;
+  font-size: 0.85em;
+  color: var(--text-secondary);
+}
+
+.form-hint {
+  display: block;
+  margin-top: 5px;
+  color: var(--text-tertiary);
+  font-size: 0.85em;
 }
