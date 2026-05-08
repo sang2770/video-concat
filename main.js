@@ -4,7 +4,7 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { JobQueue } = require('./src/jobQueue');
-const { getSysInfo } = require('./src/sysInfo');
+const { getSysInfo, CPU_ENCODER } = require('./src/sysInfo');
 const { ffmpegPath } = require('./src/ffmpegPath');
 const { ConfigStore } = require('./src/config');
 
@@ -107,21 +107,36 @@ ipcMain.handle('get-sys-info', async () => {
 ipcMain.handle('queue:add', async (_, config) => {
   // Chọn encoder dựa trên config
   let selectedEncoder;
+  let encoderSource = 'default';
 
-  if (config.useGpu && config.selectedGpuId && sysInfo?.availableGpus) {
-    // Tìm GPU được chọn
-    selectedEncoder = sysInfo.availableGpus.find(gpu => gpu.id === config.selectedGpuId);
-    if (!selectedEncoder) {
-      // Fallback to first GPU if selected not found
-      selectedEncoder = sysInfo.availableGpus[0] || sysInfo.cpuEncoder;
+  if (config.useGpu && sysInfo?.availableGpus && sysInfo.availableGpus.length > 0) {
+    // GPU available - try to use selected GPU or first available
+    if (config.selectedGpuId) {
+      selectedEncoder = sysInfo.availableGpus.find(gpu => gpu.id === config.selectedGpuId);
+      if (selectedEncoder) {
+        encoderSource = `GPU (${selectedEncoder.vendor})`;
+      } else {
+        // Selected GPU not found, fallback to first GPU
+        selectedEncoder = sysInfo.availableGpus[0];
+        encoderSource = `GPU (${selectedEncoder.vendor}) - selected GPU not found, using first available`;
+      }
+    } else {
+      // No specific GPU selected, use first available
+      selectedEncoder = sysInfo.availableGpus[0];
+      encoderSource = `GPU (${selectedEncoder.vendor})`;
     }
-  } else if (config.useGpu && sysInfo?.gpuEncoder) {
-    // Backward compatibility - use first GPU
-    selectedEncoder = sysInfo.gpuEncoder;
+  } else if (config.useGpu && (!sysInfo?.availableGpus || sysInfo.availableGpus.length === 0)) {
+    // GPU requested but not available - fallback to CPU with warning
+    selectedEncoder = sysInfo?.cpuEncoder || CPU_ENCODER;
+    encoderSource = 'CPU (GPU not available on this machine)';
+    console.warn('[main] GPU requested but not available, falling back to CPU encoding');
   } else {
-    // Use CPU encoder
-    selectedEncoder = sysInfo?.cpuEncoder;
+    // CPU encoding explicitly requested or GPU disabled
+    selectedEncoder = sysInfo?.cpuEncoder || CPU_ENCODER;
+    encoderSource = 'CPU';
   }
+
+  console.log(`[main] Using encoder: ${encoderSource}`);
 
   const resolvedConfig = {
     ...config,

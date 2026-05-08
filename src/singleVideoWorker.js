@@ -391,36 +391,47 @@ async function run() {
                 videoFile,
 
                 "-c:v",
-                "libx264",
-
-                "-preset",
-                "medium",
-
-                "-pix_fmt",
-                "yuv420p",
-
-                "-r",
-                "30",
-
-                "-c:a",
-                "aac",
-
-                "-b:a",
-                "192k",
-
-                "-ar",
-                "48000",
-
-                "-ac",
-                "2",
-
-                "-movflags",
-                "+faststart",
-
-                "-y",
-
-                cachedFile,
+                activeEncoder.codec,
             ];
+
+            // Add preset if encoder supports it
+            if (activeEncoder.preset) {
+                encArgs.push("-preset", activeEncoder.preset);
+            }
+
+            // Add encoder-specific parameters
+            if (activeEncoder.extraArgs && activeEncoder.extraArgs.length > 0) {
+                encArgs.push(...activeEncoder.extraArgs);
+            }
+
+            // Add quality/bitrate control
+            if (activeEncoder.codec === "libx264") {
+                encArgs.push("-crf", "28");
+            } else if (activeEncoder.codec === "h264_nvenc") {
+                // NVIDIA NVENC uses CQ (constant quality)
+                encArgs.push("-cq", "23");
+            } else if (activeEncoder.codec === "h264_amf") {
+                // AMD AMF uses QP (quantization parameter)
+                encArgs.push("-qp", "23");
+            } else if (activeEncoder.codec === "h264_qsv") {
+                // Intel QSV uses global_quality
+                encArgs.push("-global_quality", "23");
+            }
+
+
+            // Add keyframe settings
+            encArgs.push(
+                "-g", "60",
+                "-pix_fmt", "yuv420p",
+                "-r", "30",
+                "-c:a", "aac",
+                "-b:a", "192k",
+                "-ar", "48000",
+                "-ac", "2",
+                "-movflags", "+faststart",
+                "-y",
+                cachedFile
+            );
 
             await runFFmpeg(
                 encArgs,
@@ -522,38 +533,44 @@ async function run() {
             "0:a",
 
             "-c:v",
-            "libx264",
-
-            "-preset",
-            "ultrafast",
-
-            "-tune",
-            "stillimage",
-
-            "-pix_fmt",
-            "yuv420p",
-
-            "-c:a",
-            "aac",
-
-            "-b:a",
-            "128k",
-
-            "-ar",
-            "48000",
-
-            "-ac",
-            "2",
-
-            "-shortest",
-
-            "-movflags",
-            "+faststart",
-
-            "-y",
-
-            tailFile,
+            activeEncoder.codec,
         ];
+
+        // Add preset if encoder supports it
+        if (activeEncoder.preset) {
+            tailArgs.push("-preset", activeEncoder.preset);
+        }
+
+        // Add encoder-specific parameters
+        if (activeEncoder.extraArgs && activeEncoder.extraArgs.length > 0) {
+            tailArgs.push(...activeEncoder.extraArgs);
+        }
+
+        // Add quality/bitrate control
+        if (activeEncoder.codec === "libx264") {
+            tailArgs.push("-crf", "28");
+        } else if (activeEncoder.codec === "h264_nvenc") {
+            tailArgs.push("-cq", "23");
+        } else if (activeEncoder.codec === "h264_amf") {
+            tailArgs.push("-qp", "23");
+        } else if (activeEncoder.codec === "h264_qsv") {
+            tailArgs.push("-global_quality", "23");
+        }
+
+        // Add remaining parameters
+        tailArgs.push(
+            "-g", "60",
+            "-tune", "stillimage",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-ar", "48000",
+            "-ac", "2",
+            "-shortest",
+            "-movflags", "+faststart",
+            "-y",
+            tailFile
+        );
 
         await runFFmpeg(
             tailArgs,

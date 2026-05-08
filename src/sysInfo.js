@@ -123,13 +123,19 @@ function detectAllGpuEncoders(ffmpegPath) {
       '-c:v', enc.codec,
     ];
 
-    // Thêm preset nhanh nhất
+    // Thêm preset và parameters encoder-specific
     if (enc.codec === 'h264_nvenc') {
       testArgs.push('-preset', 'p1'); // fastest preset
+      // Add NVIDIA-specific parameters for better compatibility
+      testArgs.push('-rc', 'vbr', '-cq', '23');
     } else if (enc.codec === 'h264_amf') {
       testArgs.push('-preset', 'speed');
+      // Add AMD-specific parameters
+      testArgs.push('-quality', 'speed');
     } else if (enc.codec === 'h264_qsv') {
       testArgs.push('-preset', 'veryfast');
+      // Add Intel-specific parameters
+      testArgs.push('-look_ahead', '0');
     }
 
     testArgs.push('-f', 'null', nullOut, '-v', 'quiet');
@@ -137,8 +143,17 @@ function detectAllGpuEncoders(ffmpegPath) {
     try {
       const test = spawnSync(ffmpegPath, testArgs, {
         encoding: 'utf-8',
-        timeout: 5000, // giảm timeout
+        timeout: 5000,
+        stdio: ['pipe', 'pipe', 'pipe'], // Capture stderr for debugging
       });
+      
+      // Log detailed error info for debugging
+      if (test.status !== 0) {
+        console.log(`[sysInfo] ✗ ${enc.vendor} test failed (exit ${test.status})`);
+        if (test.stderr) {
+          console.log(`[sysInfo]   stderr: ${test.stderr.substring(0, 200)}`);
+        }
+      }
       
       // Chỉ cần exit code 0 là đủ
       if (test.status === 0) {
@@ -153,7 +168,7 @@ function detectAllGpuEncoders(ffmpegPath) {
         console.log(`[sysInfo] ✗ ${enc.vendor} không khả dụng (exit ${test.status})`);
       }
     } catch (err) {
-      console.log(`[sysInfo] ✗ ${enc.vendor} timeout hoặc lỗi`);
+      console.log(`[sysInfo] ✗ ${enc.vendor} timeout hoặc lỗi: ${err.message}`);
     }
   }
 
