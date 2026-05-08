@@ -217,7 +217,7 @@ async function run() {
             }
         };
 
-        // ── 1. Chuẩn bị File audio ���──────────────────────────────────────────────
+        // ── 1. Chuẩn bị File audio ───────────────────────────────────────────────
         const audioExts = new Set([
             ".mp3",
             ".wav",
@@ -276,26 +276,22 @@ async function run() {
             }
         }
 
-        // Normalize video: keep input codec to preserve quality
+        // Copy video codec mà không thay đổi - giữ nguyên chất lượng 100%
         if (!normalizedVideo) {
             const encArgs = [
-                "-hwaccel", "auto",
                 "-i", videoFile,
-                "-vf",
-                "scale=1920:1080:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p",
-                "-c:v", codecInfo.codec,  // Use input codec to preserve quality
+                "-c:v", codecInfo.codec,  // Copy input codec
                 "-c:a", "aac",
                 "-b:a", "192k",
                 "-ar", "44100",
                 "-ac", "2",
-                "-video_track_timescale", "90000",
                 "-y",
                 cachedFile,
             ];
 
             await runFFmpeg(encArgs, inputDuration, (pct) => {
                 progress(
-                    `Chuẩn hoá ${vFormat.toUpperCase()}: ${path.basename(videoFile)}...`,
+                    `Chuẩn bị video: ${path.basename(videoFile)}...`,
                     5 + Math.floor(pct * 25),
                 );
             });
@@ -350,7 +346,6 @@ async function run() {
             `color=c=black:s=${codecInfo.width}x${codecInfo.height}:r=${frameRate}:d=${videoPartDur}`,
             "-map", "1:v",
             "-map", "0:a",
-            "-vf", "format=yuv420p",
             "-c:v", codecInfo.codec,  // Use input codec
             "-c:a", "aac",
             "-b:a", "128k",
