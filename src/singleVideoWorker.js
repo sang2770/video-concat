@@ -8,7 +8,7 @@ const { spawn } = require("child_process");
 
 const { task, ffmpegPath, ffprobePath } = workerData;
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
+// ─── helpers ───────────────────────────────────────────────────────────[...]
 function send(msg) {
     parentPort.postMessage(msg);
 }
@@ -40,7 +40,7 @@ function getFileCacheHash(filePath) {
     return crypto.createHash("md5").update(str).digest("hex");
 }
 
-// ─── ffprobe ──────────────────────────────────────────────────────────────────
+// ─── ffprobe ───────────────────────────────────────────────────────────[...]
 function probeFile(filePath) {
     return new Promise((resolve) => {
         const proc = spawn(ffprobePath, [
@@ -49,6 +49,7 @@ function probeFile(filePath) {
             "-print_format",
             "json",
             "-show_format",
+            "-show_streams",
             filePath,
         ]);
         let out = "";
@@ -56,18 +57,22 @@ function probeFile(filePath) {
             out += d;
         });
         proc.on("close", (code) => {
-            if (code !== 0) return resolve(0);
+            if (code !== 0) return resolve({ duration: 0, streams: [] });
             try {
-                resolve(parseFloat(JSON.parse(out).format.duration) || 0);
+                const data = JSON.parse(out);
+                resolve({
+                    duration: parseFloat(data.format.duration) || 0,
+                    streams: data.streams || [],
+                });
             } catch {
-                resolve(0);
+                resolve({ duration: 0, streams: [] });
             }
         });
-        proc.on("error", () => resolve(0));
+        proc.on("error", () => resolve({ duration: 0, streams: [] }));
     });
 }
 
-// ─── ffmpeg ───────────────────────────────────────────────────────────────────
+// ─── ffmpeg ────────────────────────────────────────────────────────────[...]
 let activeProc = null;
 let isCancelled = false;
 
@@ -128,6 +133,20 @@ function runFFmpeg(args, targetDuration = 0, onProgress = null) {
     });
 }
 
+// ─── Video codec detection ──────────────────────────────────────────────[...]
+function getVideoCodecInfo(streams) {
+    const videoStream = streams.find(s => s.codec_type === "video");
+    if (!videoStream) return null;
+
+    return {
+        codec: videoStream.codec_name,
+        width: videoStream.width,
+        height: videoStream.height,
+        pix_fmt: videoStream.pix_fmt,
+        r_frame_rate: videoStream.r_frame_rate,
+    };
+}
+
 function buildEncoderArgs(encoder, bitrate, threads) {
     const { codec, preset, extraArgs = [] } = encoder;
     const isGpu = codec !== "libx264";
@@ -145,7 +164,7 @@ function buildEncoderArgs(encoder, bitrate, threads) {
     return args;
 }
 
-// ─── main logic ──────────────────────────────────────────────────────────────
+// ─── main logic ──────────────────────────────────────────────────────────[...]
 async function run() {
     const tempFiles = [];
 
@@ -198,7 +217,7 @@ async function run() {
             }
         };
 
-        // ── 1. Chuẩn bị File audio ───────────────────────────────────────────────
+        // ── 1. Chuẩn bị File audio ���──────────────────────────────────────────────
         const audioExts = new Set([
             ".mp3",
             ".wav",
@@ -222,61 +241,75 @@ async function run() {
         const audioDurations = {};
         await Promise.all(
             audioFiles.map(async (f) => {
-                audioDurations[f] = await probeFile(f);
+                const probeResult = await probeFile(f);
+                audioDurations[f] = probeResult.duration;
             }),
         );
 
-        // ── 2. ENCODE & CACHE VIDEO GỐC ──────────────────────────────────────────
+        // ── 2. PROBE VIDEO & GET CODEC INFO ──────────────────────────────────────
+        progress(`Phân tích codec video...`, 5);
+        
+        const probeResult = await probeFile(videoFile);
+        const inputDuration = probeResult.duration;
+        const codecInfo = getVideoCodecInfo(probeResult.streams);
+
+        if (!codecInfo) {
+            throw new Error("Không thể phát hiện video codec từ input");
+        }
+
         const vFormat = videoFormat.toLowerCase();
-        const isAvi = vFormat === "avi";
         const fileHash = getFileCacheHash(videoFile);
         const cachedFile = path.join(cacheFolder, `${fileHash}.${vFormat}`);
 
         let normalizedVideo = null;
 
+        // Check cache
         if (fs.existsSync(cachedFile)) {
-            const dur = await probeFile(cachedFile);
-            if (dur > 0) {
-                normalizedVideo = { file: cachedFile, duration: dur };
+            const cachedProbe = await probeFile(cachedFile);
+            if (cachedProbe.duration > 0) {
+                normalizedVideo = { 
+                    file: cachedFile, 
+                    duration: cachedProbe.duration,
+                    codecInfo: codecInfo,
+                };
                 progress(`Sử dụng cache: ${path.basename(videoFile)}`, 30);
             }
         }
 
+        // Normalize video: keep input codec to preserve quality
         if (!normalizedVideo) {
-            const dur = await probeFile(videoFile);
             const encArgs = [
-                "-hwaccel",
-                "auto",
-                "-i",
-                videoFile,
+                "-hwaccel", "auto",
+                "-i", videoFile,
                 "-vf",
                 "scale=1920:1080:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p",
-                ...buildEncoderArgs(activeEncoder, videoBitrate, threadCount),
-                "-c:a",
-                isAvi ? "libmp3lame" : "aac",
-                "-b:a",
-                "192k",
-                "-ar",
-                "44100",
-                "-ac",
-                "2",
+                "-c:v", codecInfo.codec,  // Use input codec to preserve quality
+                "-c:a", "aac",
+                "-b:a", "192k",
+                "-ar", "44100",
+                "-ac", "2",
+                "-video_track_timescale", "90000",
                 "-y",
                 cachedFile,
             ];
 
-            await runFFmpeg(encArgs, dur, (pct) => {
+            await runFFmpeg(encArgs, inputDuration, (pct) => {
                 progress(
                     `Chuẩn hoá ${vFormat.toUpperCase()}: ${path.basename(videoFile)}...`,
                     5 + Math.floor(pct * 25),
                 );
             });
 
-            normalizedVideo = { file: cachedFile, duration: dur };
+            normalizedVideo = { 
+                file: cachedFile, 
+                duration: inputDuration,
+                codecInfo: codecInfo,
+            };
         }
 
         if (isCancelled) throw new Error("Task đã bị huỷ");
 
-        // ── 3. TẠO VIDEO ĐUÔI (Màn hình đen + Nhạc random) ────────────────────────
+        // ── 3. TẠO VIDEO ĐUÔI (Màn hình đen tuỳ theo input format) ──────────────
         progress("Đang tạo phần nhạc cuối...", 35);
 
         const selectedAudios = [...audioFiles]
@@ -301,44 +334,35 @@ async function run() {
         );
 
         const tailFile = tmpMp4("tail_video");
+        
+        // Extract frame rate from input
+        const frameRateParts = codecInfo.r_frame_rate.split("/");
+        const frameRate = frameRateParts.length === 2
+            ? (parseInt(frameRateParts[0]) / parseInt(frameRateParts[1])).toFixed(2)
+            : "30";
+
         const tailArgs = [
-            "-f",
-            "concat",
-            "-safe",
-            "0",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", audioConcatTxt,
+            "-f", "lavfi",
             "-i",
-            audioConcatTxt,
-            "-f",
-            "lavfi",
-            "-i",
-            "color=c=black:s=1920x1080:r=30:sar=1",
-            "-map",
-            "1:v",
-            "-map",
-            "0:a",
-            "-vf",
-            "format=yuv420p",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-b:v",
-            "100k",
-            "-video_track_timescale",
-            "90000",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-            "-ar",
-            "48000",
-            "-ac",
-            "2",
+            `color=c=black:s=${codecInfo.width}x${codecInfo.height}:r=${frameRate}:d=${videoPartDur}`,
+            "-map", "1:v",
+            "-map", "0:a",
+            "-vf", "format=yuv420p",
+            "-c:v", codecInfo.codec,  // Use input codec
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-ar", "48000",
+            "-ac", "2",
+            "-video_track_timescale", "90000",
             "-shortest",
             "-y",
             tailFile,
         ];
-        await runFFmpeg(tailArgs, totalAudioDuration, (pct) => {
+        
+        await runFFmpeg(tailArgs, videoPartDur, (pct) => {
             progress("Đang render màn hình đen + nhạc...", 35 + Math.floor(pct * 30));
         });
 
@@ -380,7 +404,7 @@ async function run() {
             concatList.map((f) => `file '${f.replace(/'/g, "'\\''")}'`).join("\n"),
         );
 
-        // ── 5. GHÉP VIDEO CUỐI CÙNG ───────────────────────────────────────────────
+        // ── 5. GHÉP VIDEO CUỐI CÙNG (copy codec để bảo toàn chất lượng) ──────────
         progress("Đang ghép video cuối cùng...", 70);
 
         const videoBaseName = path.basename(videoFile, path.extname(videoFile));
@@ -391,16 +415,12 @@ async function run() {
         const targetTime = formatTime(TARGET);
 
         const finalArgs = [
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            master_concatTxt,
-            "-c",
-            "copy",
-            "-t",
-            targetTime,
+            "-f", "concat",
+            "-safe", "0",
+            "-i", master_concatTxt,
+            "-c:v", "copy",  // Copy video codec to preserve quality
+            "-c:a", "copy",  // Copy audio codec
+            "-t", targetTime,
             "-y",
             finalOutput,
         ];
@@ -411,7 +431,7 @@ async function run() {
 
         if (isCancelled) throw new Error("Task đã bị huỷ");
 
-        // ── 6. Hoàn tất ───────────────────────────────────────────────────────────
+        // ── 6. Hoàn tất ────────────────────────────────────────────────────────[...]
         progress("Hoàn tất!", 99);
         cleanup();
 
@@ -451,7 +471,7 @@ async function run() {
     }
 }
 
-// ─── metadata note ────────────────────────────────────────────────────────────
+// ─── metadata note ────────────────────────────────────────────────────────[...]
 function generateNote(
     outputFile,
     videoSequence,
@@ -466,11 +486,11 @@ function generateNote(
         return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
     };
     const noteFile = outputFile.replace(/\.[^.]+$/, ".txt");
-    let c = `═══════════════════════════════════════════════════════════\n                    THÔNG TIN VIDEO OUTPUT\n═══════════════════════════════════════════════════════════\n\n📅 Ngày tạo: ${new Date().toLocaleString("vi-VN")}\n📁 File output: ${path.basename(outputFile)}\n⏱️  Tổng thời lượng: ${fmt(totalDuration)}\n🎮 Encoder: ${encoder?.vendor || "libx264"}\n\n───────────────────────────────────────────────────────────\n📹 VIDEO LẶP LẠI\n───────────────────────────────────────────────────────────\n`;
+    let c = `═══════════════════════════════════════════════════════════\n        VIDEO CONCAT REPORT\n═══════════════════════════════════════════════════════════\n\n📹 VIDEO SEQUENCE (Duration: ${fmt(totalDuration)}):\n`;
     videoSequence.forEach((v, i) => {
         c += `${i + 1}. ${v.filename}  [${fmt(v.duration)}]\n`;
     });
-    c += `\n───────────────────────────────────────────────────────────\n🎵 BÀI HÁT CUỐI (Màn hình đen)\n───────────────────────────────────────────────────────────\n`;
+    c += `\n───────────────────────────────────────────────────────────\n🎵 BACKGROUND MUSIC:\n`;
     selectedAudios.forEach((a, i) => {
         c += `${i + 1}. ${path.basename(a)}\n`;
     });
