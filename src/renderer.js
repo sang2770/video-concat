@@ -64,6 +64,7 @@ const jobCards = new Map();
 })();
 
 function applySysInfo(info) {
+  console.log('[renderer] applySysInfo called with:', info);
   if (!info) return;
 
   // CPU info
@@ -78,8 +79,10 @@ function applySysInfo(info) {
     `Luồng: mặc định ${info.defaultThreads} / tối đa ${info.maxThreads}`;
 
   // GPU info
+  console.log('[renderer] availableGpus:', info.availableGpus);
   if (info.availableGpus && info.availableGpus.length > 0) {
     const gpus = info.availableGpus;
+    console.log('[renderer] Found GPUs:', gpus);
     sysInfoGpuText.textContent = `GPU: ${gpus.length} encoder khả dụng`;
     gpuEncoderBadge.textContent = `${gpus.length} GPU`;
     gpuEncoderBadge.className = 'gpu-badge gpu-available';
@@ -94,12 +97,14 @@ function applySysInfo(info) {
       option.textContent = gpu.displayName;
       if (index === 0) option.selected = true;
       gpuSelector.appendChild(option);
+      console.log('[renderer] Added GPU option:', gpu.displayName);
     });
     gpuSelector.disabled = false;
 
     gpuHint.textContent = `✅ Sẽ dùng ${gpus[0].codec} — encode nhanh hơn đáng kể`;
     gpuHint.className = 'gpu-hint gpu-hint-ok';
   } else {
+    console.log('[renderer] No GPUs found');
     sysInfoGpuText.textContent = 'GPU: Không phát hiện encoder phần cứng';
     gpuEncoderBadge.textContent = 'Không có GPU';
     gpuEncoderBadge.className = 'gpu-badge gpu-none';
@@ -153,6 +158,16 @@ function applyConfig(cfg) {
     // trigger hint update
     useGpuToggle.dispatchEvent(new Event('change'));
   }
+
+  // GPU selection
+  if (cfg.selectedGpuId && state.sysInfo?.availableGpus) {
+    const gpuExists = state.sysInfo.availableGpus.find(g => g.id === cfg.selectedGpuId);
+    if (gpuExists) {
+      gpuSelector.value = cfg.selectedGpuId;
+      // trigger hint update
+      gpuSelector.dispatchEvent(new Event('change'));
+    }
+  }
 }
 
 // Debounce save — tránh ghi file liên tục khi user đang gõ
@@ -170,6 +185,7 @@ function saveConfig() {
       targetDuration: getTargetSeconds(),
       threadCount: parseInt(threadCount.value) || 2,
       useGpu: useGpuToggle.checked && !useGpuToggle.disabled,
+      selectedGpuId: gpuSelector.value, // ID của GPU được chọn
     });
   }, 500);
 }
@@ -497,7 +513,6 @@ function buildCardHTML(job) {
       ? `<div class="job-error-msg">⚠️ ${job.error}</div>`
       : ''}
   `;
-}
 }
 
 function shortPath(p) {

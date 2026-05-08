@@ -60,9 +60,9 @@ const GPU_ENCODERS = [
   {
     codec: 'h264_qsv',
     vendor: 'Intel (Quick Sync)',
-    preset: null,           // QSV doesn't use standard presets
-    presetFast: null,           // use quality settings instead
-    extraArgs: ['-global_quality', '23'],  // use global_quality for QSV
+    preset: 'fast',           // QSV có hỗ trợ preset từ FFmpeg 4.0+
+    presetFast: 'veryfast',
+    extraArgs: ['-look_ahead', '0'],  // tắt look ahead để tăng tốc
   },
   {
     codec: 'h264_videotoolbox',
@@ -95,10 +95,11 @@ function detectAllGpuEncoders(ffmpegPath) {
   try {
     const result = spawnSync(ffmpegPath, ['-encoders', '-v', 'quiet'], {
       encoding: 'utf-8',
-      timeout: 5000,
+      timeout: 3000,
     });
     encoderList = (result.stdout || '') + (result.stderr || '');
   } catch (_) {
+    console.log('[sysInfo] Không thể lấy danh sách encoder');
     return [];
   }
 
@@ -107,38 +108,56 @@ function detectAllGpuEncoders(ffmpegPath) {
 
   // Bước 2: với mỗi GPU encoder có trong list, thử encode 1 frame
   for (const enc of GPU_ENCODERS) {
-    if (!encoderList.includes(enc.codec)) continue;
+    if (!encoderList.includes(enc.codec)) {
+      console.log(`[sysInfo] ${enc.codec} không có trong FFmpeg build`);
+      continue;
+    }
 
-    // Thử encode 1 frame null → /dev/null (hoặc NUL trên Windows)
+    console.log(`[sysInfo] Đang test ${enc.codec}...`);
+
+    // Thử encode 1 frame siêu nhỏ và nhanh
     const nullOut = process.platform === 'win32' ? 'NUL' : '/dev/null';
-    const testArgs = [
-      '-f', 'lavfi', '-i', 'color=c=black:s=64x64:r=1',
+    let testArgs = [
+      '-f', 'lavfi', '-i', 'color=c=black:s=32x32:r=1:d=0.1',
       '-frames:v', '1',
       '-c:v', enc.codec,
-      '-f', 'null',
-      nullOut,
-      '-v', 'error',
     ];
+
+    // Thêm preset nhanh nhất
+    if (enc.codec === 'h264_nvenc') {
+      testArgs.push('-preset', 'p1'); // fastest preset
+    } else if (enc.codec === 'h264_amf') {
+      testArgs.push('-preset', 'speed');
+    } else if (enc.codec === 'h264_qsv') {
+      testArgs.push('-preset', 'veryfast');
+    }
+
+    testArgs.push('-f', 'null', nullOut, '-v', 'quiet');
 
     try {
       const test = spawnSync(ffmpegPath, testArgs, {
         encoding: 'utf-8',
-        timeout: 8000,
+        timeout: 5000, // giảm timeout
       });
-      // exit 0 và không có error output = encoder hoạt động
-      if (test.status === 0 && !(test.stderr || '').toLowerCase().includes('error')) {
+      
+      // Chỉ cần exit code 0 là đủ
+      if (test.status === 0) {
+        console.log(`[sysInfo] ✓ ${enc.vendor} khả dụng`);
         availableGpus.push({
           ...enc,
           id: `gpu-${gpuIndex}`,
-          displayName: `${enc.vendor} (${enc.codec})`,
+          displayName: `${enc.vendor}`,
         });
         gpuIndex++;
+      } else {
+        console.log(`[sysInfo] ✗ ${enc.vendor} không khả dụng (exit ${test.status})`);
       }
-    } catch (_) {
-      // encoder này không dùng được, thử cái tiếp theo
+    } catch (err) {
+      console.log(`[sysInfo] ✗ ${enc.vendor} timeout hoặc lỗi`);
     }
   }
 
+  console.log(`[sysInfo] Tìm thấy ${availableGpus.length} GPU encoder khả dụng`);
   return availableGpus;
 }
 

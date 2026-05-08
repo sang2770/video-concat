@@ -29,7 +29,7 @@ function createWindow() {
   });
 
   mainWindow.loadFile('src/index.html');
-  // mainWindow.webContents.openDevTools();
+  // mainWindow.webContents.openDevTools(); // Mở DevTools để debug
 }
 
 app.on('ready', () => {
@@ -98,7 +98,10 @@ ipcMain.handle('get-audio-files', async (_, folderPath) => {
 });
 
 // Trả về thông tin hệ thống cho renderer
-ipcMain.handle('get-sys-info', async () => sysInfo);
+ipcMain.handle('get-sys-info', async () => {
+  console.log('[main] get-sys-info called, returning:', sysInfo);
+  return sysInfo;
+});
 
 // Thêm job vào queue → trả về jobId ngay lập tức
 ipcMain.handle('queue:add', async (_, config) => {
