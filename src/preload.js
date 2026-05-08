@@ -17,6 +17,10 @@ contextBridge.exposeInMainWorld('api', {
   queueCancelAll: ()           => ipcRenderer.invoke('queue:cancel-all'),
   queueGetAll:    ()           => ipcRenderer.invoke('queue:get-all'),
 
+  // ── Config ────────────────────────────────────────────────────────────────
+  configGet:      ()        => ipcRenderer.invoke('config:get'),
+  configSet:      (partial) => ipcRenderer.invoke('config:set', partial),
+
   // ── Queue events (main → renderer) ────────────────────────────────────────
   onJobAdded:     (cb) => ipcRenderer.on('queue:job-added',     (_, d) => cb(d)),
   onJobStarted:   (cb) => ipcRenderer.on('queue:job-started',   (_, d) => cb(d)),

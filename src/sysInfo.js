@@ -44,36 +44,41 @@ function getDefaultThreads() {
  */
 const GPU_ENCODERS = [
   {
-    codec:   'h264_nvenc',
-    vendor:  'NVIDIA (NVENC)',
-    preset:  'p4',          // p1(fast)..p7(slow), p4 = balanced
-    extraArgs: ['-rc', 'vbr', '-cq', '0'],
+    codec:       'h264_nvenc',
+    vendor:      'NVIDIA (NVENC)',
+    preset:      'p4',       // balanced quality
+    presetFast:  'p1',       // fastest (dùng khi chỉ cần append black screen)
+    extraArgs:   ['-rc', 'vbr', '-cq', '23'],  // use CQ instead of cq 0
   },
   {
-    codec:   'h264_amf',
-    vendor:  'AMD (AMF/VCE)',
-    preset:  'speed',
-    extraArgs: ['-quality', 'speed'],
+    codec:       'h264_amf',
+    vendor:      'AMD (AMF/VCE)',
+    preset:      'balanced',
+    presetFast:  'speed',
+    extraArgs:   [],
   },
   {
-    codec:   'h264_qsv',
-    vendor:  'Intel (Quick Sync)',
-    preset:  'fast',
-    extraArgs: [],
+    codec:       'h264_qsv',
+    vendor:      'Intel (Quick Sync)',
+    preset:      null,           // QSV doesn't use standard presets
+    presetFast:  null,           // use quality settings instead
+    extraArgs:   ['-global_quality', '23'],  // use global_quality for QSV
   },
   {
-    codec:   'h264_videotoolbox',
-    vendor:  'Apple (VideoToolbox)',
-    preset:  null,           // videotoolbox không có -preset
-    extraArgs: [],
+    codec:       'h264_videotoolbox',
+    vendor:      'Apple (VideoToolbox)',
+    preset:      null,       // không có -preset
+    presetFast:  null,
+    extraArgs:   [],
   },
 ];
 
 const CPU_ENCODER = {
-  codec:     'libx264',
-  vendor:    'CPU (libx264)',
-  preset:    'fast',
-  extraArgs: [],
+  codec:      'libx264',
+  vendor:     'CPU (libx264)',
+  preset:     'fast',
+  presetFast: 'ultrafast',
+  extraArgs:  [],
 };
 
 /**

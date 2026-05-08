@@ -52,6 +52,10 @@ const jobCards = new Map();
   state.sysInfo = info;
   applySysInfo(info);
 
+  // Load saved config → điền vào form
+  const cfg = await window.api.configGet();
+  applyConfig(cfg);
+
   // Restore jobs that were already in queue (e.g. after devtools reload)
   const existing = await window.api.queueGetAll();
   existing.forEach(job => upsertJobCard(job));
@@ -93,7 +97,70 @@ function applySysInfo(info) {
   }
 }
 
-// Cập nhật hint khi toggle GPU
+// ── Config load / save ────────────────────────────────────────────────────────
+
+function applyConfig(cfg) {
+  if (!cfg) return;
+
+  // Folders
+  if (cfg.videoFolder)  { state.videoFolder  = cfg.videoFolder;  videoFolderPath.textContent  = cfg.videoFolder; }
+  if (cfg.audioFolder)  { state.audioFolder  = cfg.audioFolder;  audioFolderPath.textContent  = cfg.audioFolder; }
+  if (cfg.outputFolder) { state.outputFolder = cfg.outputFolder; outputFolderPath.textContent = cfg.outputFolder; }
+
+  // Reload file lists nếu folder đã lưu còn tồn tại
+  if (cfg.videoFolder)  window.api.getVideos(cfg.videoFolder).then(f => { if (!f.error) { state.videoFiles = f; renderFileList(videoFileList, f); } });
+  if (cfg.audioFolder)  window.api.getAudioFiles(cfg.audioFolder).then(f => { if (!f.error) { state.audioFiles = f; renderFileList(audioFileList, f); } });
+
+  // Form fields
+  if (cfg.videoFormat)  videoFormat.value  = cfg.videoFormat;
+  if (cfg.videoBitrate) videoBitrate.value = String(cfg.videoBitrate);
+  if (cfg.audioCount)   audioCount.value   = String(cfg.audioCount);
+
+  // Target duration
+  if (cfg.targetDuration > 0) {
+    const h = Math.floor(cfg.targetDuration / 3600);
+    const m = Math.floor((cfg.targetDuration % 3600) / 60);
+    const s = cfg.targetDuration % 60;
+    targetHH.value = String(h);
+    targetMM.value = String(m);
+    targetSS.value = String(s);
+    updateTargetHint();
+  }
+
+  // threadCount — áp dụng sau applySysInfo để không bị ghi đè
+  if (cfg.threadCount) {
+    const maxT = state.sysInfo?.maxThreads || 16;
+    threadCount.value = String(Math.max(1, Math.min(cfg.threadCount, maxT)));
+  }
+
+  // GPU toggle
+  if (typeof cfg.useGpu === 'boolean' && !useGpuToggle.disabled) {
+    useGpuToggle.checked = cfg.useGpu;
+    // trigger hint update
+    useGpuToggle.dispatchEvent(new Event('change'));
+  }
+}
+
+// Debounce save — tránh ghi file liên tục khi user đang gõ
+let _saveTimer = null;
+function saveConfig() {
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(() => {
+    window.api.configSet({
+      videoFolder:    state.videoFolder,
+      audioFolder:    state.audioFolder,
+      outputFolder:   state.outputFolder,
+      videoFormat:    videoFormat.value,
+      videoBitrate:   parseInt(videoBitrate.value) || 5,
+      audioCount:     parseInt(audioCount.value)   || 5,
+      targetDuration: getTargetSeconds(),
+      threadCount:    parseInt(threadCount.value)  || 2,
+      useGpu:         useGpuToggle.checked && !useGpuToggle.disabled,
+    });
+  }, 500);
+}
+
+// ── Cập nhật hint khi toggle GPU
 useGpuToggle.addEventListener('change', () => {
   const info = state.sysInfo;
   if (!info) return;
@@ -104,6 +171,7 @@ useGpuToggle.addEventListener('change', () => {
     gpuHint.textContent = 'Sẽ dùng libx264 (CPU)';
     gpuHint.className   = 'gpu-hint';
   }
+  saveConfig();
 });
 
 // Clamp thread input khi user nhập tay
@@ -112,6 +180,7 @@ threadCount.addEventListener('change', () => {
   if (!info) return;
   const val = parseInt(threadCount.value) || 1;
   threadCount.value = String(Math.max(1, Math.min(val, info.maxThreads)));
+  saveConfig();
 });
 
 // ── Target duration helpers ───────────────────────────────────────────────────
@@ -144,11 +213,16 @@ function updateTargetHint() {
 [targetHH, targetMM, targetSS].forEach(el => {
   el.addEventListener('input', updateTargetHint);
   el.addEventListener('change', () => {
-    // clamp on blur/change
-    const max = el === targetHH ? 23 : 59;
-    el.value  = String(Math.max(0, Math.min(max, parseInt(el.value) || 0)));
+    const max = 59;
+    el.value  = el === targetHH ? String(Math.max(0, parseInt(el.value) || 0)) : String(Math.max(0, Math.min(max, parseInt(el.value) || 0)));
     updateTargetHint();
+    saveConfig();
   });
+});
+
+// Save khi thay đổi các input số khác
+[videoFormat, videoBitrate, audioCount].forEach(el => {
+  el.addEventListener('change', saveConfig);
 });
 
 // ── Queue event listeners ─────────────────────────────────────────────────────
@@ -169,6 +243,7 @@ selectVideoFolderBtn.addEventListener('click', async () => {
   if (files.error) return showStatus(`Lỗi: ${files.error}`, 'error');
   state.videoFiles = files;
   renderFileList(videoFileList, files);
+  saveConfig();
 });
 
 selectAudioFolderBtn.addEventListener('click', async () => {
@@ -180,6 +255,7 @@ selectAudioFolderBtn.addEventListener('click', async () => {
   if (files.error) return showStatus(`Lỗi: ${files.error}`, 'error');
   state.audioFiles = files;
   renderFileList(audioFileList, files);
+  saveConfig();
 });
 
 selectOutputFolderBtn.addEventListener('click', async () => {
@@ -187,6 +263,7 @@ selectOutputFolderBtn.addEventListener('click', async () => {
   if (!folder) return;
   state.outputFolder = folder;
   outputFolderPath.textContent = folder;
+  saveConfig();
 });
 
 // ── Add job ───────────────────────────────────────────────────────────────────

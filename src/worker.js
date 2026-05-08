@@ -1,141 +1,154 @@
-/**
- * Worker Thread — chạy một job ffmpeg độc lập.
- *
- * workerData: { job, ffmpegPath, ffprobePath }
- *   job.encoder = { codec, vendor, preset, extraArgs }  ← từ sysInfo
- *   job.threadCount = number (đã clamp theo maxThreads)
- *
- * Messages → parentPort:
- *   { type: 'progress', jobId, stage, progress }
- *   { type: 'done',     jobId, result }
- *   { type: 'error',    jobId, message }
- */
+"use strict";
 
-'use strict';
-
-const { workerData, parentPort } = require('worker_threads');
-const path      = require('path');
-const fs        = require('fs');
-const { spawn } = require('child_process');
+const { workerData, parentPort } = require("worker_threads");
+const path = require("path");
+const fs = require("fs");
+const crypto = require("crypto");
+const { spawn } = require("child_process");
 
 const { job, ffmpegPath, ffprobePath } = workerData;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
-
-function send(msg)              { parentPort.postMessage(msg); }
-function progress(stage, pct)  { send({ type: 'progress', jobId: job.id, stage, progress: pct }); }
+function send(msg) {
+  parentPort.postMessage(msg);
+}
+function progress(stage, pct) {
+  send({ type: "progress", jobId: job.id, stage, progress: pct });
+}
 
 function parseTimeToSeconds(t) {
   if (!t) return 0;
-  const p = t.split(':');
-  return (parseFloat(p[0]) || 0) * 3600
-       + (parseFloat(p[1]) || 0) * 60
-       + (parseFloat(p[2]) || 0);
+  const p = t.split(":");
+  return (
+    (parseFloat(p[0]) || 0) * 3600 +
+    (parseFloat(p[1]) || 0) * 60 +
+    (parseFloat(p[2]) || 0)
+  );
 }
 
 function formatTime(s) {
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
-  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+  const h = Math.floor(s / 3600),
+    m = Math.floor((s % 3600) / 60),
+    sec = Math.floor(s % 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+}
+
+// Hàm tạo mã Hash để quản lý Cache an toàn (Tránh trùng file nếu người dùng đổi file khác cùng tên)
+function getFileCacheHash(filePath) {
+  const stat = fs.statSync(filePath);
+  const str = `${path.basename(filePath)}_${stat.size}_${stat.mtimeMs}`;
+  return crypto.createHash("md5").update(str).digest("hex");
 }
 
 // ─── ffprobe ──────────────────────────────────────────────────────────────────
-
 function probeFile(filePath) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const proc = spawn(ffprobePath, [
-      '-v', 'quiet', '-print_format', 'json', '-show_format', filePath
+      "-v",
+      "quiet",
+      "-print_format",
+      "json",
+      "-show_format",
+      filePath,
     ]);
-    let out = '', err = '';
-    proc.stdout.on('data', d => { out += d; });
-    proc.stderr.on('data', d => { err += d; });
-    proc.on('close', code => {
-      if (code !== 0) return reject(new Error(`ffprobe error: ${err}`));
-      try   { resolve(parseFloat(JSON.parse(out).format.duration) || 0); }
-      catch (e) { reject(new Error(`ffprobe parse: ${e.message}`)); }
+    let out = "";
+    proc.stdout.on("data", (d) => {
+      out += d;
     });
-    proc.on('error', reject);
+    proc.on("close", (code) => {
+      if (code !== 0) return resolve(0);
+      try {
+        resolve(parseFloat(JSON.parse(out).format.duration) || 0);
+      } catch {
+        resolve(0);
+      }
+    });
+    proc.on("error", () => resolve(0));
   });
 }
 
 // ─── ffmpeg ───────────────────────────────────────────────────────────────────
-
 let activeProc = null;
-
-parentPort.on('message', msg => {
-  if (msg === 'cancel' && activeProc) {
-    try { activeProc.kill('SIGKILL'); } catch (_) {}
+parentPort.on("message", (msg) => {
+  if (msg === "cancel" && activeProc) {
+    try {
+      activeProc.kill("SIGKILL");
+    } catch (_) {}
   }
 });
 
-function runFFmpeg(args, targetDuration, progressOffset, progressRange) {
+function runFFmpeg(args, targetDuration = 0, onProgress = null) {
   return new Promise((resolve, reject) => {
     const proc = spawn(ffmpegPath, args);
     activeProc = proc;
 
-    let stderr = '';
-    proc.stderr.on('data', chunk => {
-      const line = chunk.toString();
-      stderr += line;
-      const m = line.match(/time=(\d+:\d+:\d+\.\d+)/);
-      if (m && targetDuration > 0) {
-        const pct    = Math.min(parseTimeToSeconds(m[1]) / targetDuration, 1);
-        const uiPct  = Math.floor(progressOffset + pct * progressRange);
-        progress(`Encoding: ${Math.floor(pct * 100)}%`, uiPct);
+    // TỐI ƯU 1: Không lưu toàn bộ Log, chỉ lưu 1000 ký tự cuối để báo lỗi nếu hỏng
+    let lastStderr = "";
+
+    // TỐI ƯU 2: Giới hạn tần suất báo Progress lên UI (Chống Spam IPC channel)
+    let lastUiPct = -1;
+
+    proc.stderr.on("data", (chunk) => {
+      const text = chunk.toString();
+
+      // Chỉ gộp và cắt giữ lại 1000 ký tự cuối cùng, tránh tràn RAM
+      lastStderr =
+        text.length > 1000
+          ? text.slice(-1000)
+          : (lastStderr + text).slice(-1000);
+
+      if (targetDuration > 0 && onProgress) {
+        // Tìm chữ time=... trong đoạn text VỪA MỚI NHẬN, không tìm trong cả cục log dài
+        const matches = [...text.matchAll(/time=(\d+:\d+:\d+\.\d+)/g)];
+        if (matches.length > 0) {
+          // Lấy match cuối cùng trong chunk này
+          const lastMatch = matches[matches.length - 1][1];
+          let pct = parseTimeToSeconds(lastMatch) / targetDuration;
+          pct = Math.min(Math.max(pct, 0), 1); // Clamp 0-1
+
+          // Chỉ gửi thông báo khi % thay đổi số nguyên (ví dụ: từ 90% lên 91%)
+          // Tránh việc gửi 1000 tin nhắn mỗi giây làm treo giao diện App
+          const currentUiPct = Math.floor(pct * 100);
+          if (currentUiPct !== lastUiPct) {
+            lastUiPct = currentUiPct;
+            onProgress(pct);
+          }
+        }
       }
     });
 
-    proc.on('close', code => {
+    proc.on("close", (code) => {
       activeProc = null;
       if (code === 0) resolve();
-      else reject(new Error(`ffmpeg exited ${code}:\n${stderr.slice(-600)}`));
+      else reject(new Error(`ffmpeg exited ${code}:\n${lastStderr}`));
     });
-    proc.on('error', err => { activeProc = null; reject(err); });
+
+    proc.on("error", (err) => {
+      activeProc = null;
+      reject(err);
+    });
   });
 }
 
-// ─── build encoder args ───────────────────────────────────────────────────────
-
-/**
- * Trả về mảng ffmpeg output args cho encoder được chọn.
- *
- * GPU encoders (nvenc/amf/qsv) không dùng -threads vì chúng chạy trên GPU.
- * libx264 dùng -threads để tận dụng CPU.
- *
- * @param {object} encoder   { codec, vendor, preset, extraArgs }
- * @param {number} bitrate   Mbps
- * @param {number} threads   số CPU threads (chỉ dùng cho libx264)
- * @returns {string[]}
- */
 function buildEncoderArgs(encoder, bitrate, threads) {
   const { codec, preset, extraArgs = [] } = encoder;
-  const isGpu = codec !== 'libx264';
+  const isGpu = codec !== "libx264";
+  const args = ["-c:v", codec, `-b:v`, `${bitrate}M`];
 
-  const args = [
-    '-c:v', codec,
-    `-b:v`, `${bitrate}M`,
-  ];
+  if (isGpu) args.push("-preset", preset || "fast");
+  else args.push("-preset", "ultrafast"); // Ép CPU chạy tốc độ cao nhất
 
-  // preset (nvenc dùng -preset p4, qsv/amf/x264 dùng -preset fast/speed)
-  if (preset) args.push('-preset', preset);
-
-  // extra args đặc thù từng encoder (rc mode, quality hint…)
   args.push(...extraArgs);
+  if (codec !== "h264_videotoolbox")
+    args.push("-profile:v", "high", "-level", "4.2");
+  if (!isGpu) args.push("-threads", String(threads));
 
-  // profile + level (nvenc/qsv hỗ trợ, amf/videotoolbox bỏ qua nếu lỗi)
-  if (codec !== 'h264_videotoolbox') {
-    args.push('-profile:v', 'high', '-level', '4.2');
-  }
-
-  // CPU threads chỉ có ý nghĩa với libx264
-  if (!isGpu) {
-    args.push('-threads', String(threads));
-  }
-
+  // Rất quan trọng để đồng bộ thời gian nối file
+  args.push("-video_track_timescale", "90000");
   return args;
 }
 
 // ─── main logic ──────────────────────────────────────────────────────────────
-
 async function run() {
   const {
     id,
@@ -146,232 +159,342 @@ async function run() {
     videoBitrate,
     audioCount,
     threadCount,
-    encoder,          // { codec, vendor, preset, extraArgs }
+    encoder,
   } = job;
 
-  // Fallback nếu encoder không được truyền xuống
-  const activeEncoder = encoder || { codec: 'libx264', vendor: 'CPU (libx264)', preset: 'fast', extraArgs: [] };
-  const isGpu = activeEncoder.codec !== 'libx264';
-
+  const activeEncoder = encoder || {
+    codec: "libx264",
+    vendor: "CPU",
+    preset: "fast",
+    extraArgs: [],
+  };
   const instanceId = `${id}_${Date.now()}`;
-  const tempFiles  = [];
-  const tmpFile = name => {
-    const p = path.join(outputFolder, `${name}_${instanceId}.tmp`);
+  const tempFiles = []; // Chỉ chứa các file tạm cần xóa
+
+  // Khởi tạo thư mục Output và Cache
+  const cacheFolder = path.join(outputFolder, ".cache_encoded");
+  if (!fs.existsSync(outputFolder))
+    fs.mkdirSync(outputFolder, { recursive: true });
+  if (!fs.existsSync(cacheFolder))
+    fs.mkdirSync(cacheFolder, { recursive: true });
+
+  const tmpTxt = (name) => {
+    const p = path.join(outputFolder, `${name}_${instanceId}.txt`);
     tempFiles.push(p);
     return p;
   };
+  const tmpMp4 = (name) => {
+    const p = path.join(outputFolder, `${name}_${instanceId}.mp4`);
+    tempFiles.push(p);
+    return p;
+  };
+
   const cleanup = () => {
     for (const f of tempFiles) {
-      try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (_) {}
+      try {
+        if (fs.existsSync(f)) fs.unlinkSync(f);
+      } catch (_) {}
     }
   };
 
   try {
-    if (!fs.existsSync(outputFolder)) fs.mkdirSync(outputFolder, { recursive: true });
+    // ── 1. Chuẩn bị File đầu vào ─────────────────────────────────────────────
+    const videoExts = new Set([".mp4", ".avi", ".mkv", ".mov", ".flv", ".wmv"]);
+    const audioExts = new Set([
+      ".mp3",
+      ".wav",
+      ".aac",
+      ".flac",
+      ".m4a",
+      ".ogg",
+    ]);
 
-    // ── 1. Collect files ────────────────────────────────────────────────────
-    const videoExts = new Set(['.mp4','.avi','.mkv','.mov','.flv','.wmv']);
-    const audioExts = new Set(['.mp3','.wav','.aac','.flac','.m4a','.ogg']);
+    const videoFiles = fs
+      .readdirSync(videoFolder)
+      .filter((f) => videoExts.has(path.extname(f).toLowerCase()))
+      .map((f) => path.join(videoFolder, f))
+      .sort();
+    const audioFiles = fs
+      .readdirSync(audioFolder)
+      .filter((f) => audioExts.has(path.extname(f).toLowerCase()))
+      .map((f) => path.join(audioFolder, f))
+      .sort();
 
-    const videoFiles = fs.readdirSync(videoFolder)
-      .filter(f => videoExts.has(path.extname(f).toLowerCase()))
-      .map(f => path.join(videoFolder, f)).sort();
+    if (!videoFiles.length || !audioFiles.length)
+      throw new Error("Không tìm thấy file video/audio");
 
-    const audioFiles = fs.readdirSync(audioFolder)
-      .filter(f => audioExts.has(path.extname(f).toLowerCase()))
-      .map(f => path.join(audioFolder, f)).sort();
+    progress(`Phân tích dữ liệu... [${activeEncoder.vendor}]`, 2);
 
-    if (!videoFiles.length) throw new Error('Không tìm thấy file video');
-    if (!audioFiles.length) throw new Error('Không tìm thấy file audio');
+    const audioDurations = {};
+    await Promise.all(
+      audioFiles.map(async (f) => {
+        audioDurations[f] = await probeFile(f);
+      }),
+    );
 
-    // ── 2. Probe durations ──────────────────────────────────────────────────
-    progress(`Phân tích video... [${activeEncoder.vendor}]`, 5);
+    // ── 2. GIAI ĐOẠN 1: ENCODE & CACHING VIDEO GỐC ───────────────────────────
+    const normalizedVideos = {};
+    let currentProcessed = 0;
+    const vFormat = videoFormat.toLowerCase();
+    const isAvi = vFormat === "avi";
+    for (let i = 0; i < videoFiles.length; i++) {
+      const v = videoFiles[i];
+      const fileHash = getFileCacheHash(v);
 
-    const videoDurations = {};
-    for (const f of videoFiles) videoDurations[f] = await probeFile(f);
+      // Tạo cache riêng cho từng định dạng để tránh xung đột
+      // Ví dụ: video1_hash.mp4, video1_hash.avi...
+      const cachedFile = path.join(cacheFolder, `${fileHash}.${vFormat}`);
 
-    // ── 3. Select random audios ─────────────────────────────────────────────
-    progress('Chọn bài hát ngẫu nhiên...', 15);
+      if (fs.existsSync(cachedFile)) {
+        const dur = await probeFile(cachedFile);
+        if (dur > 0) {
+          normalizedVideos[v] = { file: cachedFile, duration: dur };
+          currentProcessed++;
+          continue;
+        }
+      }
+
+      // NẾU CHƯA CÓ CACHE -> ENCODE CHUẨN HOÁ THEO ĐỊNH DẠNG ĐÍCH
+      const dur = await probeFile(v);
+      const encArgs = [
+        "-hwaccel",
+        "auto",
+        "-i",
+        v,
+        "-vf",
+        "scale=1920:1080:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p",
+        ...buildEncoderArgs(activeEncoder, videoBitrate, threadCount),
+
+        // CHỌN CODEC ÂM THANH PHÙ HỢP VỚI ĐỊNH DẠNG ĐẦU RA
+        "-c:a",
+        isAvi ? "libmp3lame" : "aac",
+        "-b:a",
+        "192k",
+        "-ar",
+        "44100",
+        "-ac",
+        "2",
+        "-y",
+        cachedFile,
+      ];
+
+      await runFFmpeg(encArgs, dur, (pct) => {
+        const overallPct =
+          5 + ((currentProcessed + pct) / videoFiles.length) * 65;
+        progress(
+          `Chuẩn hoá ${vFormat.toUpperCase()}: ${path.basename(v)}...`,
+          Math.floor(overallPct),
+        );
+      });
+
+      normalizedVideos[v] = { file: cachedFile, duration: dur };
+      currentProcessed++;
+    }
+
+    // ── 3. TẠO VIDEO ĐUÔI (Nền Đen + Nhạc Nền) BẰNG CPU ULTRAFAST ─────────────
+    progress("Đang ráp phần nhạc cuối...", 72);
 
     const selectedAudios = [...audioFiles]
       .sort(() => Math.random() - 0.5)
       .slice(0, Math.min(audioCount, audioFiles.length));
+    const totalAudioDuration = selectedAudios.reduce(
+      (sum, f) => sum + (audioDurations[f] || 0),
+      0,
+    );
 
-    const audioDurations = {};
-    for (const f of selectedAudios) audioDurations[f] = await probeFile(f);
-    const totalAudioDuration = Object.values(audioDurations).reduce((a, b) => a + b, 0);
+    const TARGET = job.targetDuration || 20 * 60 + 59;
+    const videoPartDur = TARGET - totalAudioDuration;
+    if (videoPartDur <= 0)
+      throw new Error("Tổng thời lượng nhạc vượt quá giới hạn video (20 phút)");
 
-    // ── 4. Build concat list ────────────────────────────────────────────────
-    progress('Tạo danh sách ghép video...', 25);
+    const audioConcatTxt = tmpTxt("audio_concat");
+    fs.writeFileSync(
+      audioConcatTxt,
+      selectedAudios
+        .map((f) => `file '${f.replace(/'/g, "'\\''")}'`)
+        .join("\n"),
+    );
 
-    const TARGET          = job.targetDuration || (20 * 60 + 59);  // fallback 20:59
-    const videoPartDur    = TARGET - totalAudioDuration;
-    if (videoPartDur <= 0) throw new Error('Tổng thời lượng audio vượt quá target (20:59)');
+    const tailFile = tmpMp4("tail_video"); // Video này dùng xong vứt, không cache
+    const tailArgs = [
+      "-f",
+      "concat",
+      "-safe",
+      "0",
+      "-i",
+      audioConcatTxt,
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=black:s=1920x1080:r=30:sar=1",
+      "-map",
+      "1:v",
+      "-map",
+      "0:a",
+      "-vf",
+      "format=yuv420p",
 
-    const totalVideosDur  = Object.values(videoDurations).reduce((a, b) => a + b, 0);
-    if (totalVideosDur === 0) throw new Error('Không đọc được thời lượng video');
+      // ÉP DÙNG CPU ULTRAFAST (Tránh việc gửi màn hình đen qua lại GPU gây chậm)
+      "-c:v",
+      "libx264",
+      "-preset",
+      "ultrafast",
+      "-b:v",
+      "100k",
+      "-video_track_timescale",
+      "90000",
 
-    const concatList    = [];
+      "-c:a",
+      "aac",
+      "-b:a",
+      "128k",
+      "-ar",
+      "48000",
+      "-ac",
+      "2",
+      "-shortest",
+      "-y",
+      tailFile,
+    ];
+    await runFFmpeg(tailArgs, totalAudioDuration, (pct) => {
+      progress("Đang render phần đuôi đen...", 72 + Math.floor(pct * 15));
+    });
+
+    // ── 4. TÍNH TOÁN KỊCH BẢN GHÉP CUỐI CÙNG ──────────────────────────────────
+    progress("Đang tính toán kịch bản...", 88);
+    const totalVideosDur = Object.values(normalizedVideos).reduce(
+      (sum, obj) => sum + obj.duration,
+      0,
+    );
+    if (totalVideosDur <= 0)
+      throw new Error("Không đọc được file video hợp lệ nào");
+
+    const concatList = [];
     const videoSequence = [];
-    const fullLoops     = Math.floor(videoPartDur / totalVideosDur);
-    const remainder     = videoPartDur - fullLoops * totalVideosDur;
+
+    const fullLoops = Math.floor(videoPartDur / totalVideosDur);
+    const remainder = videoPartDur - fullLoops * totalVideosDur;
 
     for (let loop = 0; loop < fullLoops; loop++) {
       for (const v of videoFiles) {
-        concatList.push(v);
-        videoSequence.push({ filename: path.basename(v), duration: videoDurations[v] });
+        if (!normalizedVideos[v]) continue;
+        concatList.push(normalizedVideos[v].file);
+        videoSequence.push({
+          filename: path.basename(v),
+          duration: normalizedVideos[v].duration,
+        });
       }
     }
+
     if (remainder > 0) {
       let partial = 0;
       for (const v of videoFiles) {
-        concatList.push(v);
-        videoSequence.push({ filename: path.basename(v), duration: videoDurations[v] });
-        partial += videoDurations[v];
+        if (!normalizedVideos[v]) continue;
+        concatList.push(normalizedVideos[v].file);
+        videoSequence.push({
+          filename: path.basename(v),
+          duration: normalizedVideos[v].duration,
+        });
+        partial += normalizedVideos[v].duration;
         if (partial >= remainder) break;
       }
     }
 
-    const videoConcatFile = tmpFile('video_concat');
-    fs.writeFileSync(videoConcatFile, concatList.map(f => `file '${f.replace(/\\/g,'/')}'`).join('\n'));
+    concatList.push(tailFile);
 
-    const audioConcatFile = tmpFile('audio_concat');
-    fs.writeFileSync(audioConcatFile, selectedAudios.map(f => `file '${f.replace(/\\/g,'/')}'`).join('\n'));
-
-    // ── 5. Encode ───────────────────────────────────────────────────────────
-    progress(`Encode bằng ${activeEncoder.vendor}...`, 35);
-
-    const finalOutput = path.join(outputFolder, `output_${instanceId}.${videoFormat}`);
-    const targetTime  = formatTime(TARGET);
-    const audioTime   = formatTime(Math.ceil(totalAudioDuration));
-    const n           = concatList.length;
-    const blackIdx    = n;
-    const audioIdx    = n + 1;
-
-    // ── filtergraph ─────────────────────────────────────────────────────────
-    // GPU encoders yêu cầu pixel format khác nhau:
-    //   nvenc → yuv420p (hoặc p010le cho 10-bit, nhưng giữ đơn giản)
-    //   qsv   → nv12 (hoặc yuv420p, qsv tự convert)
-    //   amf   → yuv420p
-    //   cpu   → yuv420p
-    // → dùng yuv420p cho tất cả, an toàn nhất
-
-    const vFilters = concatList.map((_, i) =>
-      `[${i}:v]scale=1920:1080:force_original_aspect_ratio=decrease,` +
-      `pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v${i}]`
-    );
-    const blackFilter =
-      `[${blackIdx}:v]scale=1920:1080,setsar=1,fps=30,format=yuv420p[vblack]`;
-    const concatVFilter =
-      `${concatList.map((_,i) => `[v${i}]`).join('')}[vblack]concat=n=${n+1}:v=1:a=0[outv]`;
-    const concatAFilter =
-      `${concatList.map((_,i) => `[${i}:a]`).join('')}[${audioIdx}:a]concat=n=${n+1}:v=0:a=1[outa]`;
-
-    const filterComplex = [...vFilters, blackFilter, concatVFilter, concatAFilter].join(';');
-
-    // ── ffmpeg args ─────────────────────────────────────────────────────────
-    const ffArgs = [];
-
-    // Video inputs
-    for (const f of concatList) ffArgs.push('-i', f);
-
-    // Black screen
-    ffArgs.push('-f', 'lavfi', '-t', audioTime, '-i', 'color=c=black:s=1920x1080:r=30');
-
-    // Audio concat
-    ffArgs.push('-f', 'concat', '-safe', '0', '-i', audioConcatFile);
-
-    // Filter + map
-    ffArgs.push(
-      '-filter_complex', filterComplex,
-      '-map', '[outv]',
-      '-map', '[outa]',
-      '-t', targetTime,
+    const masterConcatTxt = tmpTxt("master_concat");
+    fs.writeFileSync(
+      masterConcatTxt,
+      concatList.map((f) => `file '${f.replace(/'/g, "'\\''")}'`).join("\n"),
     );
 
-    // Video encoder (GPU or CPU)
-    ffArgs.push(...buildEncoderArgs(activeEncoder, videoBitrate, threadCount));
+    // ── 5. GIAI ĐOẠN 2: GHÉP SIÊU TỐC (-c copy) ──────────────────────────────
+    progress("Đang đóng gói xuất file...", 90);
 
-    // Audio (luôn dùng AAC trên CPU — không có GPU audio encoder cần thiết)
-    ffArgs.push(
-      '-c:a', 'aac',
-      '-b:a', '192k',
-      '-ar',  '48000',
-      '-ac',  '2',
+    const finalOutput = path.join(
+      outputFolder,
+      `output_${instanceId}.${videoFormat}`,
     );
+    const targetTime = formatTime(TARGET);
 
-    // Output flags
-    ffArgs.push(
-      '-pix_fmt', 'yuv420p',
-      '-movflags', '+faststart',
-      '-y',
+    const finalArgs = [
+      "-f",
+      "concat",
+      "-safe",
+      "0",
+      "-i",
+      masterConcatTxt,
+      "-c",
+      "copy", // KHÔNG ENCODE NỮA, SAO CHÉP DÁN!
+      "-t",
+      targetTime,
+      "-y",
       finalOutput,
-    );
+      // ĐÃ XÓA -movflags +faststart TẠI ĐÂY GIÚP IO KHÔNG BỊ TẮC
+    ];
 
-    await runFFmpeg(ffArgs, TARGET, 35, 60);
-
-    // ── 6. Metadata ─────────────────────────────────────────────────────────
-    progress('Ghi metadata...', 97);
-    generateNote(finalOutput, videoSequence, selectedAudios, TARGET,
-                 videoFiles, audioFiles, activeEncoder);
-
-    cleanup();
-
-    send({
-      type: 'done',
-      jobId: job.id,
-      result: {
-        success:  true,
-        outputFile: finalOutput,
-        encoder:  activeEncoder.vendor,
-        videoSequence,
-        audioFiles: selectedAudios.map(f => path.basename(f)),
-      }
+    await runFFmpeg(finalArgs, TARGET, (pct) => {
+      progress(`Đang ghi dữ liệu ổ cứng...`, 90 + Math.floor(pct * 8));
     });
 
+    // ── 6. Hoàn tất ──────────────────────────────────────────────────────────
+    progress("Hoàn tất!", 99);
+    cleanup();
+    generateNote(
+      finalOutput,
+      videoSequence,
+      selectedAudios,
+      TARGET,
+      videoFiles,
+      audioFiles,
+      activeEncoder,
+    );
+
+    send({
+      type: "done",
+      jobId: job.id,
+      result: {
+        success: true,
+        outputFile: finalOutput,
+        encoder: activeEncoder.vendor,
+        videoSequence,
+        audioFiles: selectedAudios.map((f) => path.basename(f)),
+      },
+    });
   } catch (err) {
     cleanup();
-    send({ type: 'error', jobId: job.id, message: err.message });
+    send({ type: "error", jobId: job.id, message: err.message });
   }
 }
 
 // ─── metadata note ────────────────────────────────────────────────────────────
-
-function generateNote(outputFile, videoSequence, selectedAudios, totalDuration,
-                      allVideos, allAudios, encoder) {
-  const fmt = s => {
-    const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = Math.floor(s%60);
-    return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+function generateNote(
+  outputFile,
+  videoSequence,
+  selectedAudios,
+  totalDuration,
+  allVideos,
+  allAudios,
+  encoder,
+) {
+  const fmt = (s) => {
+    const h = Math.floor(s / 3600),
+      m = Math.floor((s % 3600) / 60),
+      sec = Math.floor(s % 60);
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
   };
-
-  const noteFile = outputFile.replace(/\.[^.]+$/, '.txt');
-  let c = '═══════════════════════════════════════════════════════════\n';
-  c    += '                    THÔNG TIN VIDEO OUTPUT\n';
-  c    += '═══════════════════════════════════════════════════════════\n\n';
-  c    += `📅 Ngày tạo: ${new Date().toLocaleString('vi-VN')}\n`;
-  c    += `📁 File output: ${path.basename(outputFile)}\n`;
-  c    += `⏱️  Tổng thời lượng: ${fmt(totalDuration)}\n`;
-  c    += `🎮 Encoder: ${encoder?.vendor || 'libx264'}\n\n`;
-
-  c    += '───────────────────────────────────────────────────────────\n';
-  c    += '📹 THỨ TỰ VIDEO\n';
-  c    += '───────────────────────────────────────────────────────────\n';
-  videoSequence.forEach((v, i) => { c += `${i+1}. ${v.filename}  [${fmt(v.duration)}]\n`; });
-
-  c    += '\n───────────────────────────────────────────────────────────\n';
-  c    += '🎵 BÀI HÁT\n';
-  c    += '───────────────────────────────────────────────────────────\n';
-  selectedAudios.forEach((a, i) => { c += `${i+1}. ${path.basename(a)}\n`; });
-
-  c    += '\n───────────────────────────────────────────────────────────\n';
-  c    += '📊 THỐNG KÊ\n';
-  c    += '───────────────────────────────────────────────────────────\n';
-  c    += `Video sử dụng: ${videoSequence.length} / ${allVideos.length}\n`;
-  c    += `Bài hát sử dụng: ${selectedAudios.length} / ${allAudios.length}\n`;
-  c    += '\n═══════════════════════════════════════════════════════════\n';
-
-  try { fs.writeFileSync(noteFile, c, 'utf-8'); } catch (_) {}
+  const noteFile = outputFile.replace(/\.[^.]+$/, ".txt");
+  let c = `═══════════════════════════════════════════════════════════\n                    THÔNG TIN VIDEO OUTPUT\n═══════════════════════════════════════════════════════════\n\n📅 Ngày tạo: ${new Date().toLocaleString("vi-VN")}\n📁 File output: ${path.basename(outputFile)}\n⏱️  Tổng thời lượng: ${fmt(totalDuration)}\n🎮 Encoder: ${encoder?.vendor || "libx264"} (Smart Cache + Stream Copy)\n\n───────────────────────────────────────────────────────────\n📹 THỨ TỰ VIDEO\n───────────────────────────────────────────────────────────\n`;
+  videoSequence.forEach((v, i) => {
+    c += `${i + 1}. ${v.filename}  [${fmt(v.duration)}]\n`;
+  });
+  c += `\n───────────────────────────────────────────────────────────\n🎵 BÀI HÁT CUỐI\n───────────────────────────────────────────────────────────\n`;
+  selectedAudios.forEach((a, i) => {
+    c += `${i + 1}. ${path.basename(a)}\n`;
+  });
+  try {
+    fs.writeFileSync(noteFile, c, "utf-8");
+  } catch (_) {}
 }
 
-// ─── entry ────────────────────────────────────────────────────────────────────
 run();

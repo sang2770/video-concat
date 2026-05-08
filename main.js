@@ -3,12 +3,14 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs   = require('fs');
-const { JobQueue }  = require('./src/jobQueue');
+const { JobQueue }   = require('./src/jobQueue');
 const { getSysInfo } = require('./src/sysInfo');
 const { ffmpegPath } = require('./src/ffmpegPath');
+const { ConfigStore } = require('./src/config');
 
 let mainWindow;
-let sysInfo = null;   // populated after app ready
+let sysInfo     = null;
+let configStore = null;
 
 const queue = new JobQueue({ concurrency: 1 });
 
@@ -31,11 +33,15 @@ function createWindow() {
 }
 
 app.on('ready', () => {
+  // Config store — khởi tạo trước mọi thứ
+  configStore = new ConfigStore(app.getPath('userData'));
+
   // Detect GPU + CPU info once at startup (blocking, ~1-3s)
   console.log('[main] Detecting system capabilities...');
   sysInfo = getSysInfo(ffmpegPath);
   console.log(`[main] CPU: ${sysInfo.cpuModel} (${sysInfo.logicalCores} cores, max ${sysInfo.maxThreads} threads)`);
   console.log(`[main] GPU encoder: ${sysInfo.gpuEncoder ? sysInfo.gpuEncoder.vendor : 'none (CPU fallback)'}`);
+  console.log(`[main] Config file: ${app.getPath('userData')}\\config.json`);;
 
   createWindow();
 
@@ -129,4 +135,15 @@ ipcMain.handle('queue:cancel-all', async () => {
 // Lấy danh sách jobs (để khôi phục UI khi reload)
 ipcMain.handle('queue:get-all', async () => {
   return queue.getAll();
+});
+
+// ── Config ────────────────────────────────────────────────────────────────────
+
+ipcMain.handle('config:get', async () => {
+  return configStore.get();
+});
+
+ipcMain.handle('config:set', async (_, partial) => {
+  configStore.set(partial);
+  return { ok: true };
 });
