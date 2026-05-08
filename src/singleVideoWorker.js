@@ -697,7 +697,10 @@ async function run() {
         // full loops
 
         while (remainingVideoDur >= normalizedVideo.duration) {
-            concatList.push(normalizedVideo.file);
+            concatList.push({
+                file: normalizedVideo.file,
+                duration: normalizedVideo.duration,
+            });
 
             videoSequence.push({
                 filename: path.basename(videoFile),
@@ -735,7 +738,10 @@ async function run() {
 
             await runFFmpeg(trimArgs);
 
-            concatList.push(trimFile);
+            concatList.push({
+                file: trimFile,
+                duration: remainingVideoDur,
+            });
 
             videoSequence.push({
                 filename: path.basename(videoFile),
@@ -745,7 +751,10 @@ async function run() {
 
         // tail (black screen + audio)
 
-        concatList.push(tailFile);
+        concatList.push({
+            file: tailFile,
+            duration: totalAudioDuration,
+        });
 
         // ─────────────────────────────────────────────────────
         // master concat
@@ -757,10 +766,15 @@ async function run() {
         fs.writeFileSync(
             masterConcatTxt,
             concatList
-                .map(
-                    (f) =>
-                        `file '${f.replace(/'/g, "'\\''")}'`,
-                )
+                .map((seg) => {
+                    const escaped = seg.file.replace(/'/g, "'\\''");
+                    const durationLine =
+                        Number.isFinite(seg.duration) && seg.duration > 0
+                            ? `\nduration ${seg.duration.toFixed(6)}`
+                            : "";
+
+                    return `file '${escaped}'${durationLine}`;
+                })
                 .join("\n"),
         );
 
@@ -783,6 +797,9 @@ async function run() {
         const targetTime = formatTime(TARGET);
 
         const finalArgs = [
+            "-fflags",
+            "+genpts",
+
             "-f",
             "concat",
 
@@ -797,6 +814,9 @@ async function run() {
 
             "-c:a",
             "copy",
+
+            "-avoid_negative_ts",
+            "make_zero",
 
             "-movflags",
             "+faststart",
