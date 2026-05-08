@@ -3,6 +3,7 @@
 const { workerData, parentPort } = require("worker_threads");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
 
@@ -37,6 +38,34 @@ function parseTimeToSeconds(t) {
     );
 }
 
+function parseFrameRate(rFrameRate) {
+    if (!rFrameRate) return 30;
+
+    const raw = String(rFrameRate).trim();
+
+    if (!raw) return 30;
+
+    if (raw.includes("/")) {
+        const [numStr, denStr] = raw.split("/");
+        const num = parseFloat(numStr);
+        const den = parseFloat(denStr);
+
+        if (Number.isFinite(num) && Number.isFinite(den) && den !== 0) {
+            const fps = num / den;
+            if (Number.isFinite(fps) && fps > 0) {
+                return fps;
+            }
+        }
+    }
+
+    const fps = parseFloat(raw);
+    if (Number.isFinite(fps) && fps > 0) {
+        return fps;
+    }
+
+    return 30;
+}
+
 function formatTime(s) {
     const h = Math.floor(s / 3600);
     const m = Math.floor((s % 3600) / 60);
@@ -48,10 +77,14 @@ function formatTime(s) {
     )}:${String(sec).padStart(2, "0")}`;
 }
 
-function getFileCacheHash(filePath) {
+function getFileCacheHash(filePath, profile = null) {
     const stat = fs.statSync(filePath);
 
-    const str = `${path.basename(filePath)}_${stat.size}_${stat.mtimeMs}`;
+    const profileKey = profile
+        ? JSON.stringify(profile)
+        : "default";
+
+    const str = `${path.basename(filePath)}_${stat.size}_${stat.mtimeMs}_${profileKey}`;
 
     return crypto.createHash("md5").update(str).digest("hex");
 }
@@ -228,9 +261,35 @@ async function run() {
             videoFormat,
             videoBitrate,
             audioCount,
+            threadCount,
             encoder,
             targetDuration,
         } = task;
+
+        const cpuLogicalCores = Math.max(
+            1,
+            Array.isArray(os.cpus()) ? os.cpus().length : 1,
+        );
+
+        const parallelTasks = Math.max(
+            1,
+            parseInt(String(threadCount || 1), 10) || 1,
+        );
+
+        const parsedVideoBitrate =
+            parseFloat(String(videoBitrate || "")) || 0;
+
+        const hasTargetVideoBitrate = parsedVideoBitrate > 0;
+
+        const targetVideoBitrate = hasTargetVideoBitrate
+            ? `${parsedVideoBitrate}M`
+            : null;
+
+        // Split available CPU budget across parallel tasks to avoid CPU saturation.
+        const ffmpegThreadLimit = Math.max(
+            1,
+            Math.floor(Math.max(1, cpuLogicalCores - 1) / parallelTasks),
+        );
 
         const activeEncoder = encoder || {
             codec: "libx264",
@@ -350,9 +409,30 @@ async function run() {
             );
         }
 
+        const sourceFps = parseFrameRate(codecInfo.r_frame_rate);
+        const fpsArg = Number.isInteger(sourceFps)
+            ? String(sourceFps)
+            : sourceFps.toFixed(3).replace(/\.0+$/, "").replace(/\.$/, "");
+
+        const gopSize = String(Math.max(30, Math.round(sourceFps * 2)));
+
         const vFormat = videoFormat.toLowerCase();
 
-        const fileHash = getFileCacheHash(videoFile);
+        const cacheProfile = {
+            format: vFormat,
+            codec: activeEncoder.codec,
+            preset: activeEncoder.preset || null,
+            extraArgs: Array.isArray(activeEncoder.extraArgs)
+                ? activeEncoder.extraArgs
+                : [],
+            fps: fpsArg,
+            gop: gopSize,
+            videoBitrate: hasTargetVideoBitrate
+                ? targetVideoBitrate
+                : "quality-mode",
+        };
+
+        const fileHash = getFileCacheHash(videoFile, cacheProfile);
 
         const cachedFile = path.join(
             cacheFolder,
@@ -404,8 +484,17 @@ async function run() {
                 encArgs.push(...activeEncoder.extraArgs);
             }
 
-            // Add quality/bitrate control
-            if (activeEncoder.codec === "libx264") {
+            // Prefer explicit bitrate mode when user sets videoBitrate.
+            if (hasTargetVideoBitrate && targetVideoBitrate) {
+                encArgs.push(
+                    "-b:v",
+                    targetVideoBitrate,
+                    "-maxrate",
+                    targetVideoBitrate,
+                    "-bufsize",
+                    `${parsedVideoBitrate * 2}M`,
+                );
+            } else if (activeEncoder.codec === "libx264") {
                 encArgs.push("-crf", "28");
             } else if (activeEncoder.codec === "h264_nvenc") {
                 // NVIDIA NVENC uses CQ (constant quality)
@@ -418,12 +507,14 @@ async function run() {
                 encArgs.push("-global_quality", "23");
             }
 
+            encArgs.push("-threads", String(ffmpegThreadLimit));
+
 
             // Add keyframe settings
             encArgs.push(
-                "-g", "60",
+                "-g", gopSize,
                 "-pix_fmt", "yuv420p",
-                "-r", "30",
+                "-r", fpsArg,
                 "-c:a", "aac",
                 "-b:a", "192k",
                 "-ar", "48000",
@@ -521,7 +612,7 @@ async function run() {
             "lavfi",
 
             "-i",
-            `color=c=black:s=${codecInfo.width}x${codecInfo.height}:r=30`,
+            `color=c=black:s=${codecInfo.width}x${codecInfo.height}:r=${fpsArg}`,
 
             "-t",
             String(totalAudioDuration),
@@ -557,11 +648,14 @@ async function run() {
             tailArgs.push("-global_quality", "23");
         }
 
+        tailArgs.push("-threads", String(ffmpegThreadLimit));
+
         // Add remaining parameters
         tailArgs.push(
-            "-g", "60",
+            "-g", gopSize,
             "-tune", "stillimage",
             "-pix_fmt", "yuv420p",
+            "-r", fpsArg,
             "-c:a", "aac",
             "-b:a", "128k",
             "-ar", "48000",

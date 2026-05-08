@@ -93,9 +93,9 @@ function detectAllGpuEncoders(ffmpegPath) {
   // Bước 1: lấy danh sách encoder compiled-in
   let encoderList = '';
   try {
-    const result = spawnSync(ffmpegPath, ['-encoders', '-v', 'quiet'], {
+    const result = spawnSync(ffmpegPath, ['-hide_banner', '-encoders'], {
       encoding: 'utf-8',
-      timeout: 3000,
+      timeout: 8000,
     });
     encoderList = (result.stdout || '') + (result.stderr || '');
   } catch (_) {
@@ -115,60 +115,70 @@ function detectAllGpuEncoders(ffmpegPath) {
 
     console.log(`[sysInfo] Đang test ${enc.codec}...`);
 
-    // Thử encode 1 frame siêu nhỏ và nhanh
-    const nullOut = process.platform === 'win32' ? 'NUL' : '/dev/null';
-    let testArgs = [
+    // Thử encode 1 frame siêu nhỏ và nhanh.
+    // Dùng nhiều profile test từ dễ -> cụ thể để tránh false-negative theo driver/ffmpeg build.
+    const baseArgs = [
+      '-v', 'error',
       '-f', 'lavfi', '-i', 'color=c=black:s=32x32:r=1:d=0.1',
       '-frames:v', '1',
       '-c:v', enc.codec,
     ];
 
-    // Thêm preset và parameters encoder-specific
+    const testProfiles = [
+      [],
+    ];
+
     if (enc.codec === 'h264_nvenc') {
-      testArgs.push('-preset', 'p1'); // fastest preset
-      // Add NVIDIA-specific parameters for better compatibility
-      testArgs.push('-rc', 'vbr', '-cq', '23');
+      testProfiles.push(['-preset', 'p1']);
+      testProfiles.push(['-preset', 'p1', '-rc', 'vbr', '-cq', '23']);
     } else if (enc.codec === 'h264_amf') {
-      testArgs.push('-preset', 'speed');
-      // Add AMD-specific parameters
-      testArgs.push('-quality', 'speed');
+      testProfiles.push(['-quality', 'speed']);
+      testProfiles.push(['-quality', 'speed', '-usage', 'transcoding']);
     } else if (enc.codec === 'h264_qsv') {
-      testArgs.push('-preset', 'veryfast');
-      // Add Intel-specific parameters
-      testArgs.push('-look_ahead', '0');
+      testProfiles.push(['-preset', 'veryfast']);
+      testProfiles.push(['-preset', 'veryfast', '-look_ahead', '0']);
     }
 
-    testArgs.push('-f', 'null', nullOut, '-v', 'quiet');
+    let detected = false;
 
-    try {
-      const test = spawnSync(ffmpegPath, testArgs, {
-        encoding: 'utf-8',
-        timeout: 5000,
-        stdio: ['pipe', 'pipe', 'pipe'], // Capture stderr for debugging
-      });
-      
-      // Log detailed error info for debugging
-      if (test.status !== 0) {
-        console.log(`[sysInfo] ✗ ${enc.vendor} test failed (exit ${test.status})`);
+    for (const profileArgs of testProfiles) {
+      const testArgs = [
+        ...baseArgs,
+        ...profileArgs,
+        '-f', 'null', '-',
+      ];
+
+      try {
+        const test = spawnSync(ffmpegPath, testArgs, {
+          encoding: 'utf-8',
+          timeout: 12000,
+          stdio: ['pipe', 'pipe', 'pipe'], // Capture stderr for debugging
+        });
+
+        if (test.status === 0) {
+          detected = true;
+          break;
+        }
+
+        console.log(`[sysInfo] ${enc.vendor} profile failed (exit ${test.status})`);
         if (test.stderr) {
           console.log(`[sysInfo]   stderr: ${test.stderr.substring(0, 200)}`);
         }
+      } catch (err) {
+        console.log(`[sysInfo] ${enc.vendor} profile timeout/lỗi: ${err.message}`);
       }
-      
-      // Chỉ cần exit code 0 là đủ
-      if (test.status === 0) {
-        console.log(`[sysInfo] ✓ ${enc.vendor} khả dụng`);
-        availableGpus.push({
-          ...enc,
-          id: `gpu-${gpuIndex}`,
-          displayName: `${enc.vendor}`,
-        });
-        gpuIndex++;
-      } else {
-        console.log(`[sysInfo] ✗ ${enc.vendor} không khả dụng (exit ${test.status})`);
-      }
-    } catch (err) {
-      console.log(`[sysInfo] ✗ ${enc.vendor} timeout hoặc lỗi: ${err.message}`);
+    }
+
+    if (detected) {
+      console.log(`[sysInfo] ✓ ${enc.vendor} khả dụng`);
+      availableGpus.push({
+        ...enc,
+        id: `gpu-${gpuIndex}`,
+        displayName: `${enc.vendor}`,
+      });
+      gpuIndex++;
+    } else {
+      console.log(`[sysInfo] ✗ ${enc.vendor} không khả dụng`);
     }
   }
 
@@ -176,15 +186,6 @@ function detectAllGpuEncoders(ffmpegPath) {
   return availableGpus;
 }
 
-/**
- * Detect GPU encoder khả dụng (trả về GPU đầu tiên - backward compatibility)
- * @param {string} ffmpegPath
- * @returns {{ codec, vendor, preset, extraArgs } | null}  null = không có GPU
- */
-function detectGpuEncoder(ffmpegPath) {
-  const gpus = detectAllGpuEncoders(ffmpegPath);
-  return gpus.length > 0 ? gpus[0] : null;
-}
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
