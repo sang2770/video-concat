@@ -17,6 +17,34 @@ function send(msg) {
     parentPort.postMessage(msg);
 }
 
+function getEncoderPreset(encoder) {
+    const codec = encoder?.codec || "libx264";
+
+    // NVIDIA
+    if (
+        codec.includes("_nvenc")
+    ) {
+        return "p4";
+    }
+
+    // AMD
+    if (
+        codec.includes("_amf")
+    ) {
+        return "balanced";
+    }
+
+    // Intel
+    if (
+        codec.includes("_qsv")
+    ) {
+        return "medium";
+    }
+
+    // CPU x264/x265
+    return "veryfast";
+}
+
 function progress(stage, pct) {
     send({
         type: "progress",
@@ -52,6 +80,7 @@ function parseFrameRate(rFrameRate) {
 
         if (Number.isFinite(num) && Number.isFinite(den) && den !== 0) {
             const fps = num / den;
+
             if (Number.isFinite(fps) && fps > 0) {
                 return fps;
             }
@@ -59,6 +88,7 @@ function parseFrameRate(rFrameRate) {
     }
 
     const fps = parseFloat(raw);
+
     if (Number.isFinite(fps) && fps > 0) {
         return fps;
     }
@@ -86,7 +116,10 @@ function getFileCacheHash(filePath, profile = null) {
 
     const str = `${path.basename(filePath)}_${stat.size}_${stat.mtimeMs}_${profileKey}`;
 
-    return crypto.createHash("md5").update(str).digest("hex");
+    return crypto
+        .createHash("md5")
+        .update(str)
+        .digest("hex");
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -123,7 +156,8 @@ function probeFile(filePath) {
                 const data = JSON.parse(out);
 
                 resolve({
-                    duration: parseFloat(data.format.duration) || 0,
+                    duration:
+                        parseFloat(data.format.duration) || 0,
                     streams: data.streams || [],
                 });
             } catch {
@@ -164,9 +198,17 @@ const messageHandler = (msg) => {
 
 parentPort.on("message", messageHandler);
 
-function runFFmpeg(args, targetDuration = 0, onProgress = null) {
+function runFFmpeg(
+    args,
+    targetDuration = 0,
+    onProgress = null,
+) {
     return new Promise((resolve, reject) => {
-        const proc = spawn(ffmpegPath, args);
+        const proc = spawn(ffmpegPath, args, {
+            windowsHide: true,
+            detached: false,
+            stdio: ["ignore", "pipe", "pipe"],
+        });
 
         activeProc = proc;
 
@@ -177,24 +219,33 @@ function runFFmpeg(args, targetDuration = 0, onProgress = null) {
             const text = chunk.toString();
 
             lastStderr =
-                text.length > 1000
-                    ? text.slice(-1000)
-                    : (lastStderr + text).slice(-1000);
+                text.length > 2000
+                    ? text.slice(-2000)
+                    : (lastStderr + text).slice(-2000);
 
             if (targetDuration > 0 && onProgress) {
                 const matches = [
-                    ...text.matchAll(/time=(\d+:\d+:\d+\.\d+)/g),
+                    ...text.matchAll(
+                        /time=(\d+:\d+:\d+\.\d+)/g,
+                    ),
                 ];
 
                 if (matches.length > 0) {
-                    const lastMatch = matches[matches.length - 1][1];
+                    const lastMatch =
+                        matches[matches.length - 1][1];
 
                     let pct =
-                        parseTimeToSeconds(lastMatch) / targetDuration;
+                        parseTimeToSeconds(lastMatch) /
+                        targetDuration;
 
-                    pct = Math.min(Math.max(pct, 0), 1);
+                    pct = Math.min(
+                        Math.max(pct, 0),
+                        1,
+                    );
 
-                    const currentUiPct = Math.floor(pct * 100);
+                    const currentUiPct = Math.floor(
+                        pct * 100,
+                    );
 
                     if (currentUiPct !== lastUiPct) {
                         lastUiPct = currentUiPct;
@@ -246,6 +297,52 @@ function getVideoCodecInfo(streams) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// metadata note
+// ─────────────────────────────────────────────────────────────
+
+function generateNote(
+    outputFile,
+    videoSequence,
+    selectedAudios,
+    totalDuration,
+) {
+    const noteFile = outputFile.replace(
+        /\.[^.]+$/,
+        ".txt",
+    );
+
+    let c = `
+═══════════════════════════════════════════════════════════
+VIDEO CONCAT REPORT
+═══════════════════════════════════════════════════════════
+
+📹 VIDEO SEQUENCE
+Duration: ${formatTime(totalDuration)}
+
+`;
+
+    videoSequence.forEach((v, i) => {
+        c += `${i + 1}. ${v.filename} [${formatTime(
+            v.duration,
+        )}]\n`;
+    });
+
+    c += `
+───────────────────────────────────────────────────────────
+🎵 BACKGROUND MUSIC
+
+`;
+
+    selectedAudios.forEach((a, i) => {
+        c += `${i + 1}. ${path.basename(a)}\n`;
+    });
+
+    try {
+        fs.writeFileSync(noteFile, c, "utf-8");
+    } catch (_) { }
+}
+
+// ─────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────
 
@@ -268,7 +365,9 @@ async function run() {
 
         const cpuLogicalCores = Math.max(
             1,
-            Array.isArray(os.cpus()) ? os.cpus().length : 1,
+            Array.isArray(os.cpus())
+                ? os.cpus().length
+                : 1,
         );
 
         const parallelTasks = Math.max(
@@ -276,25 +375,29 @@ async function run() {
             parseInt(String(threadCount || 1), 10) || 1,
         );
 
-        const parsedVideoBitrate =
-            parseFloat(String(videoBitrate || "")) || 0;
-
-        const hasTargetVideoBitrate = parsedVideoBitrate > 0;
-
-        const targetVideoBitrate = hasTargetVideoBitrate
-            ? `${parsedVideoBitrate}M`
-            : null;
-
-        // Split available CPU budget across parallel tasks to avoid CPU saturation.
+        // CPU LIMIT
         const ffmpegThreadLimit = Math.max(
             1,
-            Math.floor(Math.max(1, cpuLogicalCores - 1) / parallelTasks),
+            Math.min(
+                4,
+                Math.floor(
+                    cpuLogicalCores /
+                    Math.max(1, parallelTasks),
+                ),
+            ),
         );
+
+        const parsedVideoBitrate =
+            parseFloat(String(videoBitrate || "")) ||
+            8;
+
+        const targetVideoBitrate =
+            `${parsedVideoBitrate}M`;
 
         const activeEncoder = encoder || {
             codec: "libx264",
             vendor: "CPU",
-            preset: "fast",
+            preset: "veryfast",
             extraArgs: [],
         };
 
@@ -305,17 +408,13 @@ async function run() {
             ".cache_encoded",
         );
 
-        if (!fs.existsSync(outputFolder)) {
-            fs.mkdirSync(outputFolder, {
-                recursive: true,
-            });
-        }
+        fs.mkdirSync(outputFolder, {
+            recursive: true,
+        });
 
-        if (!fs.existsSync(cacheFolder)) {
-            fs.mkdirSync(cacheFolder, {
-                recursive: true,
-            });
-        }
+        fs.mkdirSync(cacheFolder, {
+            recursive: true,
+        });
 
         const tmpTxt = (name) => {
             const p = path.join(
@@ -328,10 +427,10 @@ async function run() {
             return p;
         };
 
-        const tmpMp4 = (name) => {
+        const tmpTs = (name) => {
             const p = path.join(
                 outputFolder,
-                `${name}_${instanceId}.mp4`,
+                `${name}_${instanceId}.ts`,
             );
 
             tempFiles.push(p);
@@ -350,7 +449,7 @@ async function run() {
         };
 
         // ─────────────────────────────────────────────────────
-        // audio
+        // AUDIO
         // ─────────────────────────────────────────────────────
 
         const audioExts = new Set([
@@ -365,35 +464,34 @@ async function run() {
         const audioFiles = fs
             .readdirSync(audioFolder)
             .filter((f) =>
-                audioExts.has(path.extname(f).toLowerCase()),
+                audioExts.has(
+                    path.extname(f).toLowerCase(),
+                ),
             )
             .map((f) => path.join(audioFolder, f))
             .sort();
 
         if (!audioFiles.length) {
-            throw new Error("Không tìm thấy file audio");
+            throw new Error(
+                "Không tìm thấy file audio",
+            );
         }
-
-        progress(
-            `Phân tích video: ${path.basename(videoFile)}...`,
-            2,
-        );
 
         const audioDurations = {};
 
         await Promise.all(
             audioFiles.map(async (f) => {
-                const probeResult = await probeFile(f);
+                const p = await probeFile(f);
 
-                audioDurations[f] = probeResult.duration;
+                audioDurations[f] = p.duration;
             }),
         );
 
         // ─────────────────────────────────────────────────────
-        // probe video
+        // PROBE VIDEO
         // ─────────────────────────────────────────────────────
 
-        progress("Phân tích codec video...", 5);
+        progress("Phân tích video...", 5);
 
         const probeResult = await probeFile(videoFile);
 
@@ -405,142 +503,138 @@ async function run() {
 
         if (!codecInfo) {
             throw new Error(
-                "Không thể phát hiện video codec",
+                "Không phát hiện được codec video",
             );
         }
 
-        const sourceFps = parseFrameRate(codecInfo.r_frame_rate);
-        const fpsArg = Number.isInteger(sourceFps)
-            ? String(sourceFps)
-            : sourceFps.toFixed(3).replace(/\.0+$/, "").replace(/\.$/, "");
-
-        const gopSize = String(Math.max(30, Math.round(sourceFps * 2)));
-
-        const vFormat = videoFormat.toLowerCase();
-
-        const cacheProfile = {
-            format: vFormat,
-            codec: activeEncoder.codec,
-            preset: activeEncoder.preset || null,
-            extraArgs: Array.isArray(activeEncoder.extraArgs)
-                ? activeEncoder.extraArgs
-                : [],
-            fps: fpsArg,
-            gop: gopSize,
-            videoBitrate: hasTargetVideoBitrate
-                ? targetVideoBitrate
-                : "quality-mode",
-        };
-
-        const fileHash = getFileCacheHash(videoFile, cacheProfile);
-
-        const cachedFile = path.join(
-            cacheFolder,
-            `${fileHash}.${vFormat}`,
+        const sourceFps = parseFrameRate(
+            codecInfo.r_frame_rate,
         );
 
-        let normalizedVideo = null;
+        const fpsArg = Number.isInteger(sourceFps)
+            ? String(sourceFps)
+            : sourceFps.toFixed(3);
+
+        const gopSize = String(
+            Math.max(
+                30,
+                Math.round(sourceFps * 2),
+            ),
+        );
+
+        const cacheProfile = {
+            bitrate: targetVideoBitrate,
+            codec: activeEncoder.codec,
+            fps: fpsArg,
+            gop: gopSize,
+        };
+
+        const fileHash = getFileCacheHash(
+            videoFile,
+            cacheProfile,
+        );
+
+        const normalizedFile = path.join(
+            cacheFolder,
+            `${fileHash}.ts`,
+        );
 
         // ─────────────────────────────────────────────────────
-        // cache
+        // NORMALIZE VIDEO
         // ─────────────────────────────────────────────────────
 
-        if (fs.existsSync(cachedFile)) {
-            const cachedProbe = await probeFile(cachedFile);
+        if (!fs.existsSync(normalizedFile)) {
+            progress("Encode video...", 10);
 
-            if (cachedProbe.duration > 0) {
-                normalizedVideo = {
-                    file: cachedFile,
-                    duration: cachedProbe.duration,
-                };
-
-                progress(
-                    `Sử dụng cache: ${path.basename(videoFile)}`,
-                    30,
-                );
-            }
-        }
-
-        // ─────────────────────────────────────────────────────
-        // normalize video
-        // ─────────────────────────────────────────────────────
-
-        if (!normalizedVideo) {
             const encArgs = [
+                "-hwaccel",
+                "auto",
+
                 "-i",
                 videoFile,
 
+                "-map",
+"0:v:0?",
+
+"-dn",
+
+"-sn",
+
+                "-map",
+                "0:a?",
+
                 "-c:v",
                 activeEncoder.codec,
-            ];
 
-            // Add preset if encoder supports it
-            if (activeEncoder.preset) {
-                encArgs.push("-preset", activeEncoder.preset);
-            }
+                "-b:v",
+                targetVideoBitrate,
 
-            // Add encoder-specific parameters
-            if (activeEncoder.extraArgs && activeEncoder.extraArgs.length > 0) {
-                encArgs.push(...activeEncoder.extraArgs);
-            }
+                "-maxrate",
+                targetVideoBitrate,
 
-            // Prefer explicit bitrate mode when user sets videoBitrate.
-            if (hasTargetVideoBitrate && targetVideoBitrate) {
-                encArgs.push(
-                    "-b:v",
-                    targetVideoBitrate,
-                    "-maxrate",
-                    targetVideoBitrate,
-                    "-bufsize",
-                    `${parsedVideoBitrate * 2}M`,
-                );
-            } else if (activeEncoder.codec === "libx264") {
-                encArgs.push("-crf", "28");
-            } else if (activeEncoder.codec === "h264_nvenc") {
-                // NVIDIA NVENC uses CQ (constant quality)
-                encArgs.push("-cq", "23");
-            } else if (activeEncoder.codec === "h264_amf") {
-                // AMD AMF uses QP (quantization parameter)
-                encArgs.push("-qp", "23");
-            } else if (activeEncoder.codec === "h264_qsv") {
-                // Intel QSV uses global_quality
-                encArgs.push("-global_quality", "23");
-            }
+                "-bufsize",
+                `${parsedVideoBitrate * 2}M`,
 
-            encArgs.push("-threads", String(ffmpegThreadLimit));
+                "-preset",
+getEncoderPreset(activeEncoder),
 
+                "-pix_fmt",
+                "yuv420p",
 
-            // Add keyframe settings
-            encArgs.push(
-                "-g", gopSize,
-                "-pix_fmt", "yuv420p",
-                "-r", fpsArg,
-                "-c:a", "aac",
-                "-b:a", "192k",
-                "-ar", "48000",
-                "-ac", "2",
-                "-movflags", "+faststart",
+                "-vsync",
+                "cfr",
+                "-r",
+                fpsArg,
+
+                "-g",
+                gopSize,
+
+                "-keyint_min",
+                gopSize,
+
+                "-sc_threshold",
+                "0",
+
+                "-force_key_frames",
+                "expr:gte(t,n_forced*2)",
+
+                "-c:a",
+                "aac",
+
+                "-b:a",
+                "192k",
+
+                "-ar",
+                "48000",
+
+                "-ac",
+                "2",
+
+                "-af",
+                "aresample=async=1:first_pts=0",
+
+                "-f",
+                "mpegts",
+
+                "-threads",
+                String(ffmpegThreadLimit),
+
                 "-y",
-                cachedFile
-            );
+
+                normalizedFile,
+            ];
 
             await runFFmpeg(
                 encArgs,
                 inputDuration,
                 (pct) => {
                     progress(
-                        `Chuẩn bị video: ${path.basename(
-                            videoFile,
-                        )}...`,
-                        5 + Math.floor(pct * 25),
+                        "Đang encode video...",
+                        10 +
+                        Math.floor(pct * 35),
                     );
                 },
             );
-
-            normalizedVideo = {
-                file: cachedFile,
-                duration: inputDuration,
-            };
         }
 
         if (isCancelled) {
@@ -548,7 +642,7 @@ async function run() {
         }
 
         // ─────────────────────────────────────────────────────
-        // random audio
+        // RANDOM AUDIO
         // ─────────────────────────────────────────────────────
 
         const selectedAudios = [...audioFiles]
@@ -558,10 +652,12 @@ async function run() {
                 Math.min(audioCount, audioFiles.length),
             );
 
-        const totalAudioDuration = selectedAudios.reduce(
-            (sum, f) => sum + (audioDurations[f] || 0),
-            0,
-        );
+        const totalAudioDuration =
+            selectedAudios.reduce(
+                (sum, f) =>
+                    sum + (audioDurations[f] || 0),
+                0,
+            );
 
         const TARGET = targetDuration;
 
@@ -570,33 +666,37 @@ async function run() {
 
         if (videoPartDur <= 0) {
             throw new Error(
-                "Tổng thời lượng nhạc vượt quá target",
+                "Tổng thời lượng audio vượt target",
             );
         }
 
         // ─────────────────────────────────────────────────────
-        // audio concat txt
+        // AUDIO CONCAT TXT
         // ─────────────────────────────────────────────────────
 
-        const audioConcatTxt = tmpTxt("audio_concat");
+        const audioConcatTxt =
+            tmpTxt("audio_concat");
 
         fs.writeFileSync(
             audioConcatTxt,
             selectedAudios
                 .map(
                     (f) =>
-                        `file '${f.replace(/'/g, "'\\''")}'`,
+                        `file '${f.replace(
+                            /'/g,
+                            "'\\''",
+                        )}'`,
                 )
                 .join("\n"),
         );
 
         // ─────────────────────────────────────────────────────
-        // blackscreen tail
+        // BLACK SCREEN TAIL
         // ─────────────────────────────────────────────────────
 
-        progress("Đang render blackscreen...", 35);
+        progress("Render blackscreen...", 50);
 
-        const tailFile = tmpMp4("tail");
+        const tailFile = tmpTs("tail");
 
         const tailArgs = [
             "-f",
@@ -614,106 +714,102 @@ async function run() {
             "-i",
             `color=c=black:s=${codecInfo.width}x${codecInfo.height}:r=${fpsArg}`,
 
-            "-t",
-            String(totalAudioDuration),
+            "-map",
+            "1:v:0",
 
             "-map",
-            "1:v",
-
-            "-map",
-            "0:a",
+            "0:a:0",
 
             "-c:v",
             activeEncoder.codec,
-        ];
 
-        // Add preset if encoder supports it
-        if (activeEncoder.preset) {
-            tailArgs.push("-preset", activeEncoder.preset);
-        }
+            "-preset",
+            activeEncoder.codec.includes("_nvenc")
+                ? "p1"
+                : "ultrafast",
 
-        // Add encoder-specific parameters
-        if (activeEncoder.extraArgs && activeEncoder.extraArgs.length > 0) {
-            tailArgs.push(...activeEncoder.extraArgs);
-        }
+            "-b:v",
+            "400k",
 
-        // Add quality/bitrate control
-        if (activeEncoder.codec === "libx264") {
-            tailArgs.push("-crf", "28");
-        } else if (activeEncoder.codec === "h264_nvenc") {
-            tailArgs.push("-cq", "23");
-        } else if (activeEncoder.codec === "h264_amf") {
-            tailArgs.push("-qp", "23");
-        } else if (activeEncoder.codec === "h264_qsv") {
-            tailArgs.push("-global_quality", "23");
-        }
+            "-pix_fmt",
+            "yuv420p",
 
-        tailArgs.push("-threads", String(ffmpegThreadLimit));
+            "-g",
+            gopSize,
 
-        // Add remaining parameters
-        tailArgs.push(
-            "-g", gopSize,
-            "-tune", "stillimage",
-            "-pix_fmt", "yuv420p",
-            "-r", fpsArg,
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-ar", "48000",
-            "-ac", "2",
+            "-tune",
+            "stillimage",
+
+            "-c:a",
+            "aac",
+
+            "-b:a",
+            "192k",
+
+            "-af",
+            "aresample=async=1:first_pts=0",
+
             "-shortest",
-            "-movflags", "+faststart",
+
+            "-f",
+            "mpegts",
+
+            "-threads",
+            "2",
+
             "-y",
-            tailFile
-        );
+
+            tailFile,
+        ];
 
         await runFFmpeg(
             tailArgs,
             totalAudioDuration,
             (pct) => {
                 progress(
-                    "Đang render blackscreen + nhạc...",
-                    35 + Math.floor(pct * 30),
+                    "Đang render nhạc...",
+                    50 +
+                    Math.floor(pct * 20),
                 );
             },
         );
 
-        if (isCancelled) {
-            throw new Error("Task đã bị huỷ");
-        }
-
         // ─────────────────────────────────────────────────────
-        // concat build
+        // CONCAT BUILD
         // ─────────────────────────────────────────────────────
 
-        progress("Đang build concat...", 66);
+        progress("Build concat...", 72);
 
         const concatList = [];
-
         const videoSequence = [];
 
-        // Calculate how much video we need to fill videoPartDur
+        const normalizedProbe = await probeFile(
+            normalizedFile,
+        );
+
+        const normalizedDuration =
+            normalizedProbe.duration;
+
         let remainingVideoDur = videoPartDur;
 
-        // full loops
-
-        while (remainingVideoDur >= normalizedVideo.duration) {
-            concatList.push({
-                file: normalizedVideo.file,
-                duration: normalizedVideo.duration,
-            });
+        while (
+            remainingVideoDur >=
+            normalizedDuration
+        ) {
+            concatList.push(normalizedFile);
 
             videoSequence.push({
                 filename: path.basename(videoFile),
-                duration: normalizedVideo.duration,
+                duration: normalizedDuration,
             });
 
-            remainingVideoDur -= normalizedVideo.duration;
+            remainingVideoDur -= normalizedDuration;
         }
 
-        // remainder clip (if needed)
+        // partial remainder
 
-        if (remainingVideoDur > 0.2) {
-            const trimFile = tmpMp4("trim");
+        if (remainingVideoDur > 1) {
+            const trimFile = tmpTs("trim");
 
             const trimArgs = [
                 "-ss",
@@ -723,13 +819,16 @@ async function run() {
                 String(remainingVideoDur),
 
                 "-i",
-                normalizedVideo.file,
+                normalizedFile,
 
                 "-c",
                 "copy",
 
                 "-avoid_negative_ts",
                 "make_zero",
+
+                "-f",
+                "mpegts",
 
                 "-y",
 
@@ -738,10 +837,7 @@ async function run() {
 
             await runFFmpeg(trimArgs);
 
-            concatList.push({
-                file: trimFile,
-                duration: remainingVideoDur,
-            });
+            concatList.push(trimFile);
 
             videoSequence.push({
                 filename: path.basename(videoFile),
@@ -749,15 +845,12 @@ async function run() {
             });
         }
 
-        // tail (black screen + audio)
+        // tail
 
-        concatList.push({
-            file: tailFile,
-            duration: totalAudioDuration,
-        });
+        concatList.push(tailFile);
 
         // ─────────────────────────────────────────────────────
-        // master concat
+        // MASTER CONCAT
         // ─────────────────────────────────────────────────────
 
         const masterConcatTxt =
@@ -766,23 +859,21 @@ async function run() {
         fs.writeFileSync(
             masterConcatTxt,
             concatList
-                .map((seg) => {
-                    const escaped = seg.file.replace(/'/g, "'\\''");
-                    const durationLine =
-                        Number.isFinite(seg.duration) && seg.duration > 0
-                            ? `\nduration ${seg.duration.toFixed(6)}`
-                            : "";
-
-                    return `file '${escaped}'${durationLine}`;
-                })
+                .map(
+                    (f) =>
+                        `file '${f.replace(
+                            /'/g,
+                            "'\\''",
+                        )}'`,
+                )
                 .join("\n"),
         );
 
         // ─────────────────────────────────────────────────────
-        // final output
+        // FINAL OUTPUT
         // ─────────────────────────────────────────────────────
 
-        progress("Đang render output...", 70);
+        progress("Final render...", 80);
 
         const videoBaseName = path.basename(
             videoFile,
@@ -794,11 +885,12 @@ async function run() {
             `${videoBaseName}_output_${instanceId}.${videoFormat}`,
         );
 
-        const targetTime = formatTime(TARGET);
-
         const finalArgs = [
             "-fflags",
             "+genpts",
+
+            "-async",
+            "1",
 
             "-f",
             "concat",
@@ -813,13 +905,25 @@ async function run() {
             "copy",
 
             "-c:a",
-            "copy",
+            "aac",
+
+            "-b:a",
+            "192k",
+
+            "-af",
+            "aresample=async=1:first_pts=0",
+
+            "-movflags",
+            "+faststart",
+
+            "-max_interleave_delta",
+            "0",
 
             "-avoid_negative_ts",
             "make_zero",
 
-            "-movflags",
-            "+faststart",
+            "-threads",
+            "2",
 
             "-y",
 
@@ -831,8 +935,9 @@ async function run() {
             TARGET,
             (pct) => {
                 progress(
-                    "Đang ghi output...",
-                    70 + Math.floor(pct * 28),
+                    "Đang xuất file...",
+                    80 +
+                    Math.floor(pct * 19),
                 );
             },
         );
@@ -840,10 +945,6 @@ async function run() {
         if (isCancelled) {
             throw new Error("Task đã bị huỷ");
         }
-
-        // ─────────────────────────────────────────────────────
-        // done
-        // ─────────────────────────────────────────────────────
 
         progress("Hoàn tất!", 100);
 
@@ -863,10 +964,12 @@ async function run() {
                 success: true,
                 outputFile: finalOutput,
                 encoder: activeEncoder.vendor,
-                videoFile: path.basename(videoFile),
-                audioFiles: selectedAudios.map((f) =>
-                    path.basename(f),
-                ),
+                videoFile:
+                    path.basename(videoFile),
+                audioFiles:
+                    selectedAudios.map((f) =>
+                        path.basename(f),
+                    ),
             },
         });
     } catch (err) {
@@ -878,66 +981,11 @@ async function run() {
             });
         }
     } finally {
-        parentPort.off("message", messageHandler);
+        parentPort.off(
+            "message",
+            messageHandler,
+        );
     }
-}
-
-// ─────────────────────────────────────────────────────────────
-// metadata note
-// ─────────────────────────────────────────────────────────────
-
-function generateNote(
-    outputFile,
-    videoSequence,
-    selectedAudios,
-    totalDuration,
-) {
-    const fmt = (s) => {
-        const h = Math.floor(s / 3600);
-        const m = Math.floor((s % 3600) / 60);
-        const sec = Math.floor(s % 60);
-
-        return `${String(h).padStart(2, "0")}:${String(
-            m,
-        ).padStart(2, "0")}:${String(sec).padStart(
-            2,
-            "0",
-        )}`;
-    };
-
-    const noteFile = outputFile.replace(
-        /\.[^.]+$/,
-        ".txt",
-    );
-
-    let c = `
-═══════════════════════════════════════════════════════════
-VIDEO CONCAT REPORT
-═══════════════════════════════════════════════════════════
-
-📹 VIDEO SEQUENCE (Duration: ${fmt(totalDuration)})
-
-`;
-
-    videoSequence.forEach((v, i) => {
-        c += `${i + 1}. ${v.filename} [${fmt(
-            v.duration,
-        )}]\n`;
-    });
-
-    c += `
-───────────────────────────────────────────────────────────
-🎵 BACKGROUND MUSIC
-
-`;
-
-    selectedAudios.forEach((a, i) => {
-        c += `${i + 1}. ${path.basename(a)}\n`;
-    });
-
-    try {
-        fs.writeFileSync(noteFile, c, "utf-8");
-    } catch (_) { }
 }
 
 run();
