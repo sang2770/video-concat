@@ -615,8 +615,11 @@ async function run() {
     "-ac",
     "2",
 
+    "-vf",
+    "setpts=PTS-STARTPTS",
+
     "-af",
-    "aresample=async=1:first_pts=0",
+    "aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS",
 
     // PERFORMANCE
     "-threads",
@@ -735,12 +738,16 @@ async function run() {
     activeEncoder.codec,
 
     "-preset",
-    activeEncoder.codec.includes("_nvenc")
-        ? "p1"
-        : "ultrafast",
+    getEncoderPreset(activeEncoder),
 
     "-b:v",
-    "400k",
+    targetVideoBitrate,
+
+    "-maxrate",
+    targetVideoBitrate,
+
+    "-bufsize",
+    `${parsedVideoBitrate * 2}M`,
 
     "-pix_fmt",
     "yuv420p",
@@ -776,8 +783,11 @@ async function run() {
     "-ac",
     "2",
 
+    "-vf",
+    "setpts=PTS-STARTPTS",
+
     "-af",
-    "aresample=async=1:first_pts=0",
+    "aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS",
 
     // PERFORMANCE
     "-shortest",
@@ -821,12 +831,7 @@ async function run() {
         const concatList = [];
         const videoSequence = [];
 
-        const normalizedProbe = await probeFile(
-            normalizedFile,
-        );
-
-        const normalizedDuration =
-            normalizedProbe.duration;
+        const normalizedDuration = inputDuration;
 
         let remainingVideoDur = videoPartDur;
 
@@ -846,7 +851,7 @@ async function run() {
 
         // partial remainder
 
-        if (remainingVideoDur > 1) {
+        if (remainingVideoDur > 0.05) {
             const trimFile = tmpTs("trim");
 
             const trimArgs = [
@@ -953,6 +958,9 @@ async function run() {
 
     "-max_interleave_delta",
     "0",
+
+    "-t",
+    String(TARGET),
 
     "-y",
 
