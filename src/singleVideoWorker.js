@@ -402,6 +402,8 @@ async function run() {
             extraArgs: [],
         };
 
+        const audioCodec = videoFormat === "avi" ? "libmp3lame" : "aac";
+
         const instanceId = `${id}_${Date.now()}`;
 
         const cacheFolder = path.join(
@@ -526,6 +528,7 @@ async function run() {
         const cacheProfile = {
             bitrate: targetVideoBitrate,
             codec: activeEncoder.codec,
+            audioCodec: audioCodec,
             fps: fpsArg,
             gop: gopSize,
         };
@@ -618,7 +621,7 @@ async function run() {
 
                 // AUDIO
                 "-c:a",
-                "aac",
+                audioCodec,
 
                 "-b:a",
                 "192k",
@@ -795,7 +798,7 @@ async function run() {
 
             // AUDIO
             "-c:a",
-            "aac",
+            audioCodec,
 
             "-b:a",
             "192k",
