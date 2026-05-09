@@ -357,6 +357,7 @@ async function run() {
             outputFolder,
             videoFormat,
             videoBitrate,
+            enableVideoBitrate, // Added toggle
             audioCount,
             threadCount,
             encoder,
@@ -543,96 +544,111 @@ async function run() {
         // NORMALIZE VIDEO
         // ─────────────────────────────────────────────────────
 
-        if (!fs.existsSync(normalizedFile)) {
+        const sourceCodec = codecInfo.codec;
+        const isCompatibleCodec = sourceCodec === 'h264' || sourceCodec === 'hevc';
+
+        // Chỉ encode khi người dùng bật toggle bitrate hoặc định dạng gốc không tương thích (vd: không phải h264/hevc)
+        const needVideoEncode = enableVideoBitrate || !isCompatibleCodec;
+        const useCopy = !needVideoEncode;
+
+        if (useCopy) {
+            progress("Copy stream video gốc...", 10);
+        } else {
             progress("Encode video...", 10);
+        }
 
+        if (!fs.existsSync(normalizedFile)) {
             const encArgs = [
-    // INPUT OPTIONS
-    "-hwaccel",
-    "auto",
+                // INPUT OPTIONS
+                "-hwaccel",
+                "auto",
 
-    "-i",
-    videoFile,
+                "-i",
+                videoFile,
 
-    // STREAM MAP
-    "-map",
-    "0:v:0?",
+                // STREAM MAP
+                "-map",
+                "0:v:0?",
 
-    "-map",
-    "0:a?",
+                "-map",
+                "0:a?",
 
-    "-dn",
+                "-dn",
 
-    "-sn",
+                "-sn",
 
-    // VIDEO
-    "-c:v",
-    activeEncoder.codec,
+                // VIDEO
+                "-c:v",
+                useCopy ? "copy" : activeEncoder.codec,
 
-    "-preset",
-    getEncoderPreset(activeEncoder),
+                ...(useCopy ? [] : [
+                    "-preset",
+                    getEncoderPreset(activeEncoder),
 
-    "-b:v",
-    targetVideoBitrate,
+                    "-b:v",
+                    targetVideoBitrate,
 
-    "-maxrate",
-    targetVideoBitrate,
+                    "-maxrate",
+                    targetVideoBitrate,
 
-    "-bufsize",
-    `${parsedVideoBitrate * 2}M`,
+                    "-bufsize",
+                    `${parsedVideoBitrate * 2}M`,
 
-    "-pix_fmt",
-    "yuv420p",
+                    "-pix_fmt",
+                    "yuv420p",
 
-    "-fps_mode",
-    "cfr",
+                    "-fps_mode",
+                    "cfr",
 
-    "-r",
-    fpsArg,
+                    "-r",
+                    fpsArg,
 
-    "-g",
-    gopSize,
+                    "-g",
+                    gopSize,
 
-    "-keyint_min",
-    gopSize,
+                    "-keyint_min",
+                    gopSize,
 
-    "-sc_threshold",
-    "0",
+                    "-sc_threshold",
+                    "0",
 
-    "-force_key_frames",
-    "expr:gte(t,n_forced*2)",
+                    "-force_key_frames",
+                    "expr:gte(t,n_forced*2)",
+                ]),
 
-    // AUDIO
-    "-c:a",
-    "aac",
+                // AUDIO
+                "-c:a",
+                "aac",
 
-    "-b:a",
-    "192k",
+                "-b:a",
+                "192k",
 
-    "-ar",
-    "48000",
+                "-ar",
+                "48000",
 
-    "-ac",
-    "2",
+                "-ac",
+                "2",
 
-    "-vf",
-    "setpts=PTS-STARTPTS",
+                ...(useCopy ? [] : [
+                    "-vf",
+                    "setpts=PTS-STARTPTS",
+                ]),
 
-    "-af",
-    "aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS",
+                "-af",
+                "aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS",
 
-    // PERFORMANCE
-    "-threads",
-    String(ffmpegThreadLimit),
+                // PERFORMANCE
+                "-threads",
+                String(ffmpegThreadLimit),
 
-    // OUTPUT FORMAT
-    "-f",
-    "mpegts",
+                // OUTPUT FORMAT
+                "-f",
+                "mpegts",
 
-    "-y",
+                "-y",
 
-    normalizedFile,
-];
+                normalizedFile,
+            ];
 
             await runFFmpeg(
                 encArgs,
@@ -709,106 +725,113 @@ async function run() {
         const tailFile = tmpTs("tail");
 
         const tailArgs = [
-    // AUDIO INPUT
-    "-f",
-    "concat",
+            // AUDIO INPUT
+            "-f",
+            "concat",
 
-    "-safe",
-    "0",
+            "-safe",
+            "0",
 
-    "-i",
-    audioConcatTxt,
+            "-i",
+            audioConcatTxt,
 
-    // BLACK VIDEO INPUT
-    "-f",
-    "lavfi",
+            // BLACK VIDEO INPUT
+            "-f",
+            "lavfi",
 
-    "-i",
-    `color=c=black:s=${codecInfo.width}x${codecInfo.height}:r=${fpsArg}`,
+            "-i",
+            `color=c=black:s=${codecInfo.width}x${codecInfo.height}:r=${fpsArg}`,
 
-    // MAP
-    "-map",
-    "1:v:0",
+            // MAP
+            "-map",
+            "1:v:0",
 
-    "-map",
-    "0:a:0",
+            "-map",
+            "0:a:0",
 
-    // VIDEO
-    "-c:v",
-    activeEncoder.codec,
+            // VIDEO
+            "-c:v",
+            useCopy ? (sourceCodec === 'hevc' ? 'libx265' : 'libx264') : activeEncoder.codec,
 
-    "-preset",
-    getEncoderPreset(activeEncoder),
+            ...(useCopy ? [
+                // Render tail matching source settings when copying
+                "-preset", "veryfast",
+                "-pix_fmt", "yuv420p",
+                "-r", fpsArg,
+            ] : [
+                "-preset",
+                getEncoderPreset(activeEncoder),
 
-    "-b:v",
-    targetVideoBitrate,
+                "-b:v",
+                targetVideoBitrate,
 
-    "-maxrate",
-    targetVideoBitrate,
+                "-maxrate",
+                targetVideoBitrate,
 
-    "-bufsize",
-    `${parsedVideoBitrate * 2}M`,
+                "-bufsize",
+                `${parsedVideoBitrate * 2}M`,
 
-    "-pix_fmt",
-    "yuv420p",
+                "-pix_fmt",
+                "yuv420p",
 
-    "-fps_mode",
-    "cfr",
+                "-fps_mode",
+                "cfr",
 
-    "-r",
-    fpsArg,
+                "-r",
+                fpsArg,
 
-    "-g",
-    gopSize,
+                "-g",
+                gopSize,
 
-    "-keyint_min",
-    gopSize,
+                "-keyint_min",
+                gopSize,
 
-    "-sc_threshold",
-    "0",
+                "-sc_threshold",
+                "0",
+            ]),
 
-    "-tune",
-    "stillimage",
+            "-tune",
+            "stillimage",
 
-    // AUDIO
-    "-c:a",
-    "aac",
+            // AUDIO
+            "-c:a",
+            "aac",
 
-    "-b:a",
-    "192k",
+            "-b:a",
+            "192k",
 
-    "-ar",
-    "48000",
+            "-ar",
+            "48000",
 
-    "-ac",
-    "2",
+            "-ac",
+            "2",
 
-    "-vf",
-    "setpts=PTS-STARTPTS",
+            "-vf",
+            "setpts=PTS-STARTPTS",
 
-    "-af",
-    "aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS",
+            "-af",
+            "aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS",
 
-    // PERFORMANCE
-    "-shortest",
+            // PERFORMANCE
+            "-shortest",
 
-    "-threads",
-    "2",
+            "-threads",
+            "2",
 
-    // OUTPUT
-    "-f",
-    "mpegts",
+            // OUTPUT
+            "-f",
+            "mpegts",
 
-    "-muxpreload",
-    "0",
+            "-muxpreload",
+            "0",
 
-    "-muxdelay",
-    "0",
+            "-muxdelay",
+            "0",
 
-    "-y",
+            "-y",
 
-    tailFile,
-];
+            tailFile,
+        ];
 
         await runFFmpeg(
             tailArgs,
@@ -929,43 +952,43 @@ async function run() {
         );
 
         const finalArgs = [
-    "-fflags",
-    "+genpts",
+            "-fflags",
+            "+genpts",
 
-    "-f",
-    "concat",
+            "-f",
+            "concat",
 
-    "-safe",
-    "0",
+            "-safe",
+            "0",
 
-    "-i",
-    masterConcatTxt,
+            "-i",
+            masterConcatTxt,
 
-    "-c",
-    "copy",
+            "-c",
+            "copy",
 
-    // "-movflags",
-    // "+faststart",
+            // "-movflags",
+            // "+faststart",
 
-    "-muxpreload",
-    "0",
+            "-muxpreload",
+            "0",
 
-    "-muxdelay",
-    "0",
+            "-muxdelay",
+            "0",
 
-    "-avoid_negative_ts",
-    "make_zero",
+            "-avoid_negative_ts",
+            "make_zero",
 
-    "-max_interleave_delta",
-    "0",
+            "-max_interleave_delta",
+            "0",
 
-    "-t",
-    String(TARGET),
+            "-t",
+            String(TARGET),
 
-    "-y",
+            "-y",
 
-    finalOutput,
-];
+            finalOutput,
+        ];
 
         await runFFmpeg(
             finalArgs,

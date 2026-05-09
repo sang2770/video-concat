@@ -11,6 +11,7 @@ const videoFileList = document.getElementById('videoFileList');
 const audioFileList = document.getElementById('audioFileList');
 const videoFormat = document.getElementById('videoFormat');
 const videoBitrate = document.getElementById('videoBitrate');
+const enableVideoBitrate = document.getElementById('enableVideoBitrate');
 const audioCount = document.getElementById('audioCount');
 const targetHH = document.getElementById('targetHH');
 const targetMM = document.getElementById('targetMM');
@@ -132,6 +133,10 @@ function applyConfig(cfg) {
 
   // Form fields
   if (cfg.videoFormat) videoFormat.value = cfg.videoFormat;
+  if (typeof cfg.enableVideoBitrate === 'boolean') {
+    enableVideoBitrate.checked = cfg.enableVideoBitrate;
+    videoBitrate.disabled = !cfg.enableVideoBitrate;
+  }
   if (cfg.videoBitrate) videoBitrate.value = String(cfg.videoBitrate);
   if (cfg.audioCount) audioCount.value = String(cfg.audioCount);
 
@@ -180,6 +185,7 @@ function saveConfig() {
       audioFolder: state.audioFolder,
       outputFolder: state.outputFolder,
       videoFormat: videoFormat.value,
+      enableVideoBitrate: enableVideoBitrate.checked,
       videoBitrate: parseInt(videoBitrate.value) || 5,
       audioCount: parseInt(audioCount.value) || 5,
       targetDuration: getTargetSeconds(),
@@ -268,8 +274,13 @@ function updateTargetHint() {
 });
 
 // Save khi thay đổi các input số khác
-[videoFormat, videoBitrate, audioCount].forEach(el => {
-  el.addEventListener('change', saveConfig);
+[videoFormat, videoBitrate, audioCount, enableVideoBitrate].forEach(el => {
+  el.addEventListener('change', () => {
+    if (el === enableVideoBitrate) {
+      videoBitrate.disabled = !enableVideoBitrate.checked;
+    }
+    saveConfig();
+  });
 });
 
 // ── Queue event listeners ─────────────────────────────────────────────────────
@@ -329,6 +340,7 @@ addJobBtn.addEventListener('click', async () => {
     audioFolder: state.audioFolder,
     outputFolder: state.outputFolder,
     videoFormat: videoFormat.value,
+    enableVideoBitrate: enableVideoBitrate.checked,
     videoBitrate: parseInt(videoBitrate.value),
     audioCount: parseInt(audioCount.value),
     targetDuration: getTargetSeconds(),
@@ -356,6 +368,8 @@ resetBtn.addEventListener('click', () => {
   videoFileList.innerHTML = '';
   audioFileList.innerHTML = '';
   videoFormat.value = 'mp4';
+  enableVideoBitrate.checked = false;
+  videoBitrate.disabled = true;
   videoBitrate.value = '5';
   audioCount.value = '5';
   targetHH.value = '0';
