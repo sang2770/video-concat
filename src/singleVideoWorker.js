@@ -547,82 +547,89 @@ async function run() {
             progress("Encode video...", 10);
 
             const encArgs = [
-                "-hwaccel",
-                "auto",
+    // INPUT OPTIONS
+    "-hwaccel",
+    "auto",
 
-                "-i",
-                videoFile,
+    "-i",
+    videoFile,
 
-                "-map",
-"0:v:0?",
+    // STREAM MAP
+    "-map",
+    "0:v:0?",
 
-"-dn",
+    "-map",
+    "0:a?",
 
-"-sn",
+    "-dn",
 
-                "-map",
-                "0:a?",
+    "-sn",
 
-                "-c:v",
-                activeEncoder.codec,
+    // VIDEO
+    "-c:v",
+    activeEncoder.codec,
 
-                "-b:v",
-                targetVideoBitrate,
+    "-preset",
+    getEncoderPreset(activeEncoder),
 
-                "-maxrate",
-                targetVideoBitrate,
+    "-b:v",
+    targetVideoBitrate,
 
-                "-bufsize",
-                `${parsedVideoBitrate * 2}M`,
+    "-maxrate",
+    targetVideoBitrate,
 
-                "-preset",
-getEncoderPreset(activeEncoder),
+    "-bufsize",
+    `${parsedVideoBitrate * 2}M`,
 
-                "-pix_fmt",
-                "yuv420p",
+    "-pix_fmt",
+    "yuv420p",
 
-                "-vsync",
-                "cfr",
-                "-r",
-                fpsArg,
+    "-fps_mode",
+    "cfr",
 
-                "-g",
-                gopSize,
+    "-r",
+    fpsArg,
 
-                "-keyint_min",
-                gopSize,
+    "-g",
+    gopSize,
 
-                "-sc_threshold",
-                "0",
+    "-keyint_min",
+    gopSize,
 
-                "-force_key_frames",
-                "expr:gte(t,n_forced*2)",
+    "-sc_threshold",
+    "0",
 
-                "-c:a",
-                "aac",
+    "-force_key_frames",
+    "expr:gte(t,n_forced*2)",
 
-                "-b:a",
-                "192k",
+    // AUDIO
+    "-c:a",
+    "aac",
 
-                "-ar",
-                "48000",
+    "-b:a",
+    "192k",
 
-                "-ac",
-                "2",
+    "-ar",
+    "48000",
 
-                "-af",
-                "aresample=async=1:first_pts=0",
+    "-ac",
+    "2",
 
-                "-f",
-                "mpegts",
+    "-af",
+    "aresample=async=1:first_pts=0",
 
-                "-threads",
-                String(ffmpegThreadLimit),
+    // PERFORMANCE
+    "-threads",
+    String(ffmpegThreadLimit),
 
-                "-y",
+    // OUTPUT FORMAT
+    "-f",
+    "mpegts",
 
-                normalizedFile,
-            ];
+    "-y",
+
+    normalizedFile,
+];
 
             await runFFmpeg(
                 encArgs,
@@ -699,68 +706,99 @@ getEncoderPreset(activeEncoder),
         const tailFile = tmpTs("tail");
 
         const tailArgs = [
-            "-f",
-            "concat",
+    // AUDIO INPUT
+    "-f",
+    "concat",
 
-            "-safe",
-            "0",
+    "-safe",
+    "0",
 
-            "-i",
-            audioConcatTxt,
+    "-i",
+    audioConcatTxt,
 
-            "-f",
-            "lavfi",
+    // BLACK VIDEO INPUT
+    "-f",
+    "lavfi",
 
-            "-i",
-            `color=c=black:s=${codecInfo.width}x${codecInfo.height}:r=${fpsArg}`,
+    "-i",
+    `color=c=black:s=${codecInfo.width}x${codecInfo.height}:r=${fpsArg}`,
 
-            "-map",
-            "1:v:0",
+    // MAP
+    "-map",
+    "1:v:0",
 
-            "-map",
-            "0:a:0",
+    "-map",
+    "0:a:0",
 
-            "-c:v",
-            activeEncoder.codec,
+    // VIDEO
+    "-c:v",
+    activeEncoder.codec,
 
-            "-preset",
-            activeEncoder.codec.includes("_nvenc")
-                ? "p1"
-                : "ultrafast",
+    "-preset",
+    activeEncoder.codec.includes("_nvenc")
+        ? "p1"
+        : "ultrafast",
 
-            "-b:v",
-            "400k",
+    "-b:v",
+    "400k",
 
-            "-pix_fmt",
-            "yuv420p",
+    "-pix_fmt",
+    "yuv420p",
 
-            "-g",
-            gopSize,
+    "-fps_mode",
+    "cfr",
 
-            "-tune",
-            "stillimage",
+    "-r",
+    fpsArg,
 
-            "-c:a",
-            "aac",
+    "-g",
+    gopSize,
 
-            "-b:a",
-            "192k",
+    "-keyint_min",
+    gopSize,
 
-            "-af",
-            "aresample=async=1:first_pts=0",
+    "-sc_threshold",
+    "0",
 
-            "-shortest",
+    "-tune",
+    "stillimage",
 
-            "-f",
-            "mpegts",
+    // AUDIO
+    "-c:a",
+    "aac",
 
-            "-threads",
-            "2",
+    "-b:a",
+    "192k",
 
-            "-y",
+    "-ar",
+    "48000",
 
-            tailFile,
-        ];
+    "-ac",
+    "2",
+
+    "-af",
+    "aresample=async=1:first_pts=0",
+
+    // PERFORMANCE
+    "-shortest",
+
+    "-threads",
+    "2",
+
+    // OUTPUT
+    "-f",
+    "mpegts",
+
+    "-muxpreload",
+    "0",
+
+    "-muxdelay",
+    "0",
+
+    "-y",
+
+    tailFile,
+];
 
         await runFFmpeg(
             tailArgs,
@@ -886,49 +924,40 @@ getEncoderPreset(activeEncoder),
         );
 
         const finalArgs = [
-            "-fflags",
-            "+genpts",
+    "-fflags",
+    "+genpts",
 
-            "-async",
-            "1",
+    "-f",
+    "concat",
 
-            "-f",
-            "concat",
+    "-safe",
+    "0",
 
-            "-safe",
-            "0",
+    "-i",
+    masterConcatTxt,
 
-            "-i",
-            masterConcatTxt,
+    "-c",
+    "copy",
 
-            "-c:v",
-            "copy",
+    // "-movflags",
+    // "+faststart",
 
-            "-c:a",
-            "aac",
+    "-muxpreload",
+    "0",
 
-            "-b:a",
-            "192k",
+    "-muxdelay",
+    "0",
 
-            "-af",
-            "aresample=async=1:first_pts=0",
+    "-avoid_negative_ts",
+    "make_zero",
 
-            "-movflags",
-            "+faststart",
+    "-max_interleave_delta",
+    "0",
 
-            "-max_interleave_delta",
-            "0",
+    "-y",
 
-            "-avoid_negative_ts",
-            "make_zero",
-
-            "-threads",
-            "2",
-
-            "-y",
-
-            finalOutput,
-        ];
+    finalOutput,
+];
 
         await runFFmpeg(
             finalArgs,
