@@ -8,7 +8,7 @@
  */
 
 const path = require('path');
-const fs   = require('fs');
+const fs = require('fs');
 
 // Fields được phép lưu (whitelist — không lưu encoder/sysInfo)
 const SAVEABLE_KEYS = [
@@ -16,23 +16,27 @@ const SAVEABLE_KEYS = [
   'audioFolder',
   'outputFolder',
   'videoFormat',
+  'enableVideoBitrate',
   'videoBitrate',
   'audioCount',
   'targetDuration',
   'threadCount',
   'useGpu',
+  'selectedGpuId',
 ];
 
 const DEFAULTS = {
-  videoFolder:    null,
-  audioFolder:    null,
-  outputFolder:   null,
-  videoFormat:    'mp4',
-  videoBitrate:   5,
-  audioCount:     5,
+  videoFolder: null,
+  audioFolder: null,
+  outputFolder: null,
+  videoFormat: 'mp4',
+  enableVideoBitrate: false,
+  videoBitrate: 5,
+  audioCount: 5,
   targetDuration: 1259,   // 00:20:59
-  threadCount:    2,
-  useGpu:         true,
+  threadCount: 2,
+  useGpu: true,
+  selectedGpuId: null,
 };
 
 class ConfigStore {
@@ -45,7 +49,7 @@ class ConfigStore {
   _load() {
     try {
       if (fs.existsSync(this._file)) {
-        const raw  = fs.readFileSync(this._file, 'utf-8');
+        const raw = fs.readFileSync(this._file, 'utf-8');
         const parsed = JSON.parse(raw);
         // Chỉ lấy các key hợp lệ, bỏ qua key lạ
         for (const key of SAVEABLE_KEYS) {
@@ -73,7 +77,7 @@ class ConfigStore {
       const dir = path.dirname(this._file);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(this._file, JSON.stringify(this._data, null, 2), 'utf-8');
-    } catch (_) {}
+    } catch (_) { }
   }
 }
 

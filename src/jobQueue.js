@@ -197,7 +197,6 @@ class JobQueue extends EventEmitter {
     }
 
     const workerPath = path.join(__dirname, 'singleVideoWorker.js');
-
     const worker = new Worker(workerPath, {
       workerData: {
         task: {
@@ -207,6 +206,7 @@ class JobQueue extends EventEmitter {
           outputFolder: taskRecord.config.outputFolder,
           videoFormat: taskRecord.config.videoFormat,
           videoBitrate: taskRecord.config.videoBitrate,
+          enableVideoBitrate: taskRecord.config.enableVideoBitrate,
           audioCount: taskRecord.config.audioCount,
           threadCount: taskRecord.config.threadCount,
           encoder: taskRecord.config.encoder,

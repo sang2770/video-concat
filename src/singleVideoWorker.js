@@ -591,12 +591,6 @@ async function run() {
                     "-b:v",
                     targetVideoBitrate,
 
-                    "-maxrate",
-                    targetVideoBitrate,
-
-                    "-bufsize",
-                    `${parsedVideoBitrate * 2}M`,
-
                     "-pix_fmt",
                     "yuv420p",
 
@@ -768,12 +762,6 @@ async function run() {
                 "-b:v",
                 targetVideoBitrate,
 
-                "-maxrate",
-                targetVideoBitrate,
-
-                "-bufsize",
-                `${parsedVideoBitrate * 2}M`,
-
                 "-pix_fmt",
                 "yuv420p",
 
@@ -824,12 +812,6 @@ async function run() {
             // OUTPUT
             "-f",
             "mpegts",
-
-            "-muxpreload",
-            "0",
-
-            "-muxdelay",
-            "0",
 
             "-y",
 
@@ -972,12 +954,6 @@ async function run() {
 
             // "-movflags",
             // "+faststart",
-
-            "-muxpreload",
-            "0",
-
-            "-muxdelay",
-            "0",
 
             "-avoid_negative_ts",
             "make_zero",
