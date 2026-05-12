@@ -16,7 +16,6 @@ const SAVEABLE_KEYS = [
   'audioFolder',
   'outputFolder',
   'videoFormat',
-  'enableVideoBitrate',
   'videoBitrate',
   'audioCount',
   'targetDuration',
@@ -30,8 +29,7 @@ const DEFAULTS = {
   audioFolder: null,
   outputFolder: null,
   videoFormat: 'mp4',
-  enableVideoBitrate: false,
-  videoBitrate: 5,
+  videoBitrate: 0,
   audioCount: 5,
   targetDuration: 1259,   // 00:20:59
   threadCount: 2,

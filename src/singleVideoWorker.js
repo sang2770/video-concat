@@ -349,6 +349,14 @@ Duration: ${formatTime(totalDuration)}
 async function run() {
     const tempFiles = [];
 
+    function cleanupTemp() {
+        for (const f of tempFiles) {
+            try {
+                if (fs.existsSync(f)) fs.unlinkSync(f);
+            } catch (_) {}
+        }
+    }
+
     try {
         const {
             id,
@@ -357,644 +365,274 @@ async function run() {
             outputFolder,
             videoFormat,
             videoBitrate,
-            enableVideoBitrate, // Added toggle
             audioCount,
             threadCount,
             encoder,
             targetDuration,
         } = task;
 
-        const cpuLogicalCores = Math.max(
-            1,
-            Array.isArray(os.cpus())
-                ? os.cpus().length
-                : 1,
-        );
+        if (isCancelled) throw new Error("Task đã bị huỷ");
 
-        const parallelTasks = Math.max(
-            1,
-            parseInt(String(threadCount || 1), 10) || 1,
-        );
+        // ── 1. Probe input video ───────────────────────────────────
+        progress("Phân tích video đầu vào...", 2);
+        const { duration: srcDuration, streams } = await probeFile(videoFile);
+        if (!srcDuration) {
+            throw new Error("Không thể đọc metadata video đầu vào");
+        }
 
-        // CPU LIMIT
-        const ffmpegThreadLimit = Math.max(
-            1,
-            Math.min(
-                4,
-                Math.floor(
-                    cpuLogicalCores /
-                    Math.max(1, parallelTasks),
-                ),
-            ),
-        );
+        const codecInfo = getVideoCodecInfo(streams);
+        const fps       = codecInfo ? parseFrameRate(codecInfo.r_frame_rate) : 30;
+        const width     = codecInfo?.width   || 1920;
+        const height    = codecInfo?.height  || 1080;
+        const pixFmt    = codecInfo?.pix_fmt || "yuv420p";
 
-        const parsedVideoBitrate =
-            parseFloat(String(videoBitrate || "")) ||
-            8;
+        const codec       = encoder?.codec || "libx264";
+        const preset      = getEncoderPreset(encoder);
+        const bitrateArgs = videoBitrate ? ["-b:v", String(videoBitrate)] : ["-crf", "23"];
+        const threadArgs  = threadCount > 0 ? ["-threads", String(threadCount)] : [];
 
-        const targetVideoBitrate =
-            `${parsedVideoBitrate}M`;
+        // Detect whether re-encoding is needed (same codec family → stream copy)
+        const INPUT_CODEC = codecInfo?.codec; // e.g. "h264", "hevc"
+        const H264 = new Set(["h264", "libx264", "h264_nvenc", "h264_amf", "h264_qsv"]);
+        const HEVC = new Set(["hevc", "libx265", "hevc_nvenc", "hevc_amf", "hevc_qsv"]);
 
-        const activeEncoder = encoder || {
-            codec: "libx264",
-            vendor: "CPU",
-            preset: "veryfast",
-            extraArgs: [],
-        };
+        function codecFamily(name) {
+            if (!name) return null;
+            if (H264.has(name)) return "h264";
+            if (HEVC.has(name)) return "hevc";
+            return name;
+        }
 
-        const audioCodec = videoFormat === "avi" ? "libmp3lame" : "aac";
+        const canStreamCopy =
+            !videoBitrate &&
+            (!encoder?.codec ||
+            codecFamily(INPUT_CODEC) === codecFamily(encoder.codec));
 
-        const instanceId = `${id}_${Date.now()}`;
+        // Encoder used for synthetic segments (black screen) — must match input codec
+        // so that stream-copy concat works when canStreamCopy is true.
+        const CODEC_MAP = { h264: "libx264", hevc: "libx265", vp9: "libvpx-vp9", av1: "libaom-av1" };
+        const outroEncoder = canStreamCopy
+            ? (CODEC_MAP[INPUT_CODEC] || "libx264")
+            : codec;
+        const outroPreset      = canStreamCopy ? "veryfast" : preset;
+        const outroBitrateArgs = canStreamCopy
+            ? ["-crf", "23"]
+            : bitrateArgs;
 
-        const cacheFolder = path.join(
-            outputFolder,
-            ".cache_encoded",
-        );
+        if (isCancelled) throw new Error("Task đã bị huỷ");
 
-        fs.mkdirSync(outputFolder, {
-            recursive: true,
-        });
-
-        fs.mkdirSync(cacheFolder, {
-            recursive: true,
-        });
-
-        const tmpTxt = (name) => {
-            const p = path.join(
-                outputFolder,
-                `${name}_${instanceId}.txt`,
-            );
-
-            tempFiles.push(p);
-
-            return p;
-        };
-
-        const tmpTs = (name) => {
-            const p = path.join(
-                outputFolder,
-                `${name}_${instanceId}.ts`,
-            );
-
-            tempFiles.push(p);
-
-            return p;
-        };
-
-        const cleanup = () => {
-            for (const f of tempFiles) {
-                try {
-                    if (fs.existsSync(f)) {
-                        fs.unlinkSync(f);
-                    }
-                } catch (_) { }
-            }
-        };
-
-        // ─────────────────────────────────────────────────────
-        // AUDIO
-        // ─────────────────────────────────────────────────────
-
-        const audioExts = new Set([
-            ".mp3",
-            ".wav",
-            ".aac",
-            ".flac",
-            ".m4a",
-            ".ogg",
-        ]);
-
-        const audioFiles = fs
+        // ── 2. Random audio selection ──────────────────────────────
+        progress("Chọn audio ngẫu nhiên...", 5);
+        const AUDIO_EXTS = new Set([".mp3", ".wav", ".aac", ".m4a", ".flac", ".ogg", ".opus"]);
+        const allAudioFiles = fs
             .readdirSync(audioFolder)
-            .filter((f) =>
-                audioExts.has(
-                    path.extname(f).toLowerCase(),
-                ),
-            )
-            .map((f) => path.join(audioFolder, f))
-            .sort();
+            .filter((f) => AUDIO_EXTS.has(path.extname(f).toLowerCase()))
+            .map((f) => path.join(audioFolder, f));
 
-        if (!audioFiles.length) {
-            throw new Error(
-                "Không tìm thấy file audio",
-            );
+        if (allAudioFiles.length === 0) {
+            throw new Error(`Không tìm thấy file audio trong: ${audioFolder}`);
         }
 
-        const audioDurations = {};
+        // Shuffle + pick audioCount files
+        const shuffled      = [...allAudioFiles].sort(() => Math.random() - 0.5);
+        const selectedAudios = shuffled.slice(0, Math.min(audioCount, shuffled.length));
 
-        await Promise.all(
-            audioFiles.map(async (f) => {
-                const p = await probeFile(f);
+        if (isCancelled) throw new Error("Task đã bị huỷ");
 
-                audioDurations[f] = p.duration;
-            }),
-        );
+        // ── 3. Concatenate selected audio → temp AAC ──────────────
+        progress("Ghép file audio...", 8);
+        const tmpDir          = os.tmpdir();
+        const concatAudioPath = path.join(tmpDir, `vc_audio_${id}.aac`);
+        tempFiles.push(concatAudioPath);
 
-        // ─────────────────────────────────────────────────────
-        // PROBE VIDEO
-        // ─────────────────────────────────────────────────────
+        // Add padding to ensure audio reaches full target duration
+        const audioDurationStr = (targetDuration + 0.1).toFixed(2);
 
-        progress("Phân tích video...", 5);
-
-        const probeResult = await probeFile(videoFile);
-
-        const inputDuration = probeResult.duration;
-
-        const codecInfo = getVideoCodecInfo(
-            probeResult.streams,
-        );
-
-        if (!codecInfo) {
-            throw new Error(
-                "Không phát hiện được codec video",
-            );
-        }
-
-        const sourceFps = parseFrameRate(
-            codecInfo.r_frame_rate,
-        );
-
-        const fpsArg = Number.isInteger(sourceFps)
-            ? String(sourceFps)
-            : sourceFps.toFixed(3);
-
-        const gopSize = String(
-            Math.max(
-                30,
-                Math.round(sourceFps * 2),
-            ),
-        );
-
-        const cacheProfile = {
-            bitrate: targetVideoBitrate,
-            codec: activeEncoder.codec,
-            audioCodec: audioCodec,
-            fps: fpsArg,
-            gop: gopSize,
-        };
-
-        const fileHash = getFileCacheHash(
-            videoFile,
-            cacheProfile,
-        );
-
-        const normalizedFile = path.join(
-            cacheFolder,
-            `${fileHash}.ts`,
-        );
-
-        // ─────────────────────────────────────────────────────
-        // NORMALIZE VIDEO
-        // ─────────────────────────────────────────────────────
-
-        const sourceCodec = codecInfo.codec;
-        const isCompatibleCodec = sourceCodec === 'h264' || sourceCodec === 'hevc';
-
-        // Chỉ encode khi người dùng bật toggle bitrate hoặc định dạng gốc không tương thích (vd: không phải h264/hevc)
-        const needVideoEncode = enableVideoBitrate || !isCompatibleCodec;
-        const useCopy = !needVideoEncode;
-
-        if (useCopy) {
-            progress("Copy stream video gốc...", 10);
+        if (selectedAudios.length === 1) {
+            await runFFmpeg([
+                "-i", selectedAudios[0],
+                "-t", audioDurationStr,
+                "-c:a", "aac", "-b:a", "192k",
+                "-y", concatAudioPath,
+            ]);
         } else {
-            progress("Encode video...", 10);
-        }
-
-        if (!fs.existsSync(normalizedFile)) {
-            const encArgs = [
-                // INPUT OPTIONS
-                "-hwaccel",
-                "auto",
-
-                "-i",
-                videoFile,
-
-                // STREAM MAP
-                "-map",
-                "0:v:0?",
-
-                "-map",
-                "0:a?",
-
-                "-dn",
-
-                "-sn",
-
-                // VIDEO
-                "-c:v",
-                useCopy ? "copy" : activeEncoder.codec,
-
-                ...(useCopy ? [] : [
-                    "-preset",
-                    getEncoderPreset(activeEncoder),
-
-                    "-b:v",
-                    targetVideoBitrate,
-
-                    "-pix_fmt",
-                    "yuv420p",
-
-                    "-fps_mode",
-                    "cfr",
-
-                    "-r",
-                    fpsArg,
-
-                    "-g",
-                    gopSize,
-
-                    "-keyint_min",
-                    gopSize,
-
-                    "-sc_threshold",
-                    "0",
-
-                    "-force_key_frames",
-                    "expr:gte(t,n_forced*2)",
-                ]),
-
-                // AUDIO
-                "-c:a",
-                audioCodec,
-
-                "-b:a",
-                "192k",
-
-                "-ar",
-                "48000",
-
-                "-ac",
-                "2",
-
-                ...(useCopy ? [] : [
-                    "-vf",
-                    "setpts=PTS-STARTPTS",
-                ]),
-
-                "-af",
-                "aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS",
-
-                // PERFORMANCE
-                "-threads",
-                String(ffmpegThreadLimit),
-
-                // OUTPUT FORMAT
-                "-f",
-                "mpegts",
-
-                "-y",
-
-                normalizedFile,
-            ];
+            const audioListPath = path.join(tmpDir, `vc_alist_${id}.txt`);
+            tempFiles.push(audioListPath);
+            const listContent = selectedAudios
+                .map((f) => `file '${f.replace(/\\/g, "/")}'`)
+                .join("\n");
+            fs.writeFileSync(audioListPath, listContent, "utf-8");
 
             await runFFmpeg(
-                encArgs,
-                inputDuration,
-                (pct) => {
-                    progress(
-                        "Đang encode video...",
-                        10 +
-                        Math.floor(pct * 35),
-                    );
-                },
+                [
+                    "-f", "concat", "-safe", "0",
+                    "-i", audioListPath,
+                    "-t", audioDurationStr,
+                    "-c:a", "aac", "-b:a", "192k",
+                    "-y", concatAudioPath,
+                ],
+                targetDuration,
+                (pct) => progress("Ghép audio...", 8 + Math.floor(pct * 7)),
             );
         }
 
-        if (isCancelled) {
-            throw new Error("Task đã bị huỷ");
+        if (isCancelled) throw new Error("Task đã bị huỷ");
+
+        // ── 4. Compute loop count & outro (black screen) duration ──
+        const TARGET = targetDuration + 1;
+        let fullLoops, videoPlayDuration;
+
+        if (srcDuration >= TARGET) {
+            // Input is longer than target: use one trimmed pass
+            fullLoops         = 1;
+            videoPlayDuration = TARGET;
+        } else {
+            // Floor keeps only complete loops; remainder → black screen
+            fullLoops         = Math.floor(TARGET / srcDuration);
+            videoPlayDuration = fullLoops * srcDuration;
         }
 
-        // ─────────────────────────────────────────────────────
-        // RANDOM AUDIO
-        // ─────────────────────────────────────────────────────
+        const outroDuration = Math.max(0, TARGET - videoPlayDuration);
 
-        const selectedAudios = [...audioFiles]
-            .sort(() => Math.random() - 0.5)
-            .slice(
-                0,
-                Math.min(audioCount, audioFiles.length),
-            );
+        // ── 5. Looped video segment (video only, no audio) ───────
+        // Stream-copy when codec family matches → much faster; re-encode only when needed.
+        progress(canStreamCopy ? "Copy video vòng lặp..." : "Mã hóa video vòng lặp...", 15);
+        const loopedVideoPath = path.join(tmpDir, `vc_looped_${id}.mp4`);
+        tempFiles.push(loopedVideoPath);
 
-        const totalAudioDuration =
-            selectedAudios.reduce(
-                (sum, f) =>
-                    sum + (audioDurations[f] || 0),
-                0,
-            );
-
-        const TARGET = targetDuration;
-
-        const videoPartDur =
-            TARGET - totalAudioDuration;
-
-        if (videoPartDur <= 0) {
-            throw new Error(
-                "Tổng thời lượng audio vượt target",
-            );
-        }
-
-        // ─────────────────────────────────────────────────────
-        // AUDIO CONCAT TXT
-        // ─────────────────────────────────────────────────────
-
-        const audioConcatTxt =
-            tmpTxt("audio_concat");
-
-        fs.writeFileSync(
-            audioConcatTxt,
-            selectedAudios
-                .map(
-                    (f) =>
-                        `file '${f.replace(
-                            /'/g,
-                            "'\\''",
-                        )}'`,
-                )
-                .join("\n"),
-        );
-
-        // ─────────────────────────────────────────────────────
-        // BLACK SCREEN TAIL
-        // ─────────────────────────────────────────────────────
-
-        progress("Render blackscreen...", 50);
-
-        const tailFile = tmpTs("tail");
-
-        const tailArgs = [
-            // AUDIO INPUT
-            "-f",
-            "concat",
-
-            "-safe",
-            "0",
-
-            "-i",
-            audioConcatTxt,
-
-            // BLACK VIDEO INPUT
-            "-f",
-            "lavfi",
-
-            "-i",
-            `color=c=black:s=${codecInfo.width}x${codecInfo.height}:r=${fpsArg}`,
-
-            // MAP
-            "-map",
-            "1:v:0",
-
-            "-map",
-            "0:a:0",
-
-            // VIDEO
-            "-c:v",
-            useCopy ? (sourceCodec === 'hevc' ? 'libx265' : 'libx264') : activeEncoder.codec,
-
-            ...(useCopy ? [
-                // Render tail matching source settings when copying
-                "-preset", "veryfast",
-                "-pix_fmt", "yuv420p",
-                "-r", fpsArg,
-            ] : [
-                "-preset",
-                getEncoderPreset(activeEncoder),
-
-                "-b:v",
-                targetVideoBitrate,
-
-                "-pix_fmt",
-                "yuv420p",
-
-                "-fps_mode",
-                "cfr",
-
-                "-r",
-                fpsArg,
-
-                "-g",
-                gopSize,
-
-                "-keyint_min",
-                gopSize,
-
-                "-sc_threshold",
-                "0",
-            ]),
-
-            "-tune",
-            "stillimage",
-
-            // AUDIO
-            "-c:a",
-            audioCodec,
-
-            "-b:a",
-            "192k",
-
-            "-ar",
-            "48000",
-
-            "-ac",
-            "2",
-
-            "-vf",
-            "setpts=PTS-STARTPTS",
-
-            "-af",
-            "aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS",
-
-            // PERFORMANCE
-            "-shortest",
-
-            "-threads",
-            "2",
-
-            // OUTPUT
-            "-f",
-            "mpegts",
-
-            "-y",
-
-            tailFile,
-        ];
+        // -stream_loop N means N additional loops after the first play,
+        // so N-1 gives exactly fullLoops total plays.
+        const loopArgs = canStreamCopy
+            ? [
+                  "-stream_loop", String(fullLoops - 1),
+                  "-i", videoFile,
+                  "-t", String(videoPlayDuration),
+                  "-an",
+                  "-c:v", "copy",
+                  "-avoid_negative_ts", "make_zero",
+                  "-y", loopedVideoPath,
+              ]
+            : [
+                  "-stream_loop", String(fullLoops - 1),
+                  "-i", videoFile,
+                  "-t", String(videoPlayDuration),
+                  "-an",
+                  "-c:v", codec, ...bitrateArgs, "-preset", preset,
+                  "-r", String(fps), "-pix_fmt", pixFmt,
+                  ...threadArgs,
+                  "-y", loopedVideoPath,
+              ];
 
         await runFFmpeg(
-            tailArgs,
-            totalAudioDuration,
-            (pct) => {
-                progress(
-                    "Đang render nhạc...",
-                    50 +
-                    Math.floor(pct * 20),
-                );
-            },
+            loopArgs,
+            videoPlayDuration,
+            (pct) => progress(
+                canStreamCopy ? "Copy video vòng lặp..." : "Mã hóa video vòng lặp...",
+                15 + Math.floor(pct * 35),
+            ),
         );
 
-        // ─────────────────────────────────────────────────────
-        // CONCAT BUILD
-        // ─────────────────────────────────────────────────────
+        if (isCancelled) throw new Error("Task đã bị huỷ");
 
-        progress("Build concat...", 72);
+        // ── 6. Create black-screen outro (if needed) ───────────────
+        let finalVideoPath = loopedVideoPath;
 
-        const concatList = [];
-        const videoSequence = [];
+        if (outroDuration > 0.05) {
+            progress("Tạo màn hình đen...", 50);
+            const outroPath = path.join(tmpDir, `vc_outro_${id}.mp4`);
+            tempFiles.push(outroPath);
 
-        const normalizedDuration = inputDuration;
+            await runFFmpeg(
+                [
+                    "-f", "lavfi",
+                    "-i", `color=c=black:size=${width}x${height}:rate=${fps}`,
+                    "-t", String(outroDuration),
+                    "-c:v", outroEncoder, ...outroBitrateArgs, "-preset", outroPreset,
+                    "-pix_fmt", pixFmt,
+                    ...threadArgs,
+                    "-y", outroPath,
+                ],
+                outroDuration,
+                (pct) => progress("Tạo màn hình đen...", 50 + Math.floor(pct * 8)),
+            );
 
-        let remainingVideoDur = videoPartDur;
+            if (isCancelled) throw new Error("Task đã bị huỷ");
 
-        while (
-            remainingVideoDur >=
-            normalizedDuration
-        ) {
-            concatList.push(normalizedFile);
+            // Concat looped video + black screen → full video track
+            progress("Ghép video + outro...", 58);
+            const vidListPath  = path.join(tmpDir, `vc_vlist_${id}.txt`);
+            const fullVideoPath = path.join(tmpDir, `vc_full_${id}.mp4`);
+            tempFiles.push(vidListPath, fullVideoPath);
 
-            videoSequence.push({
-                filename: path.basename(videoFile),
-                duration: normalizedDuration,
-            });
+            fs.writeFileSync(
+                vidListPath,
+                [
+                    `file '${loopedVideoPath.replace(/\\/g, "/")}'`,
+                    `file '${outroPath.replace(/\\/g, "/")}'`,
+                ].join("\n"),
+                "utf-8",
+            );
 
-            remainingVideoDur -= normalizedDuration;
+            await runFFmpeg(
+                [
+                    "-f", "concat", "-safe", "0",
+                    "-i", vidListPath,
+                    "-c", "copy",
+                    "-y", fullVideoPath,
+                ],
+                TARGET,
+                (pct) => progress("Ghép video + outro...", 58 + Math.floor(pct * 10)),
+            );
+
+            finalVideoPath = fullVideoPath;
         }
 
-        // partial remainder
+        if (isCancelled) throw new Error("Task đã bị huỷ");
 
-        if (remainingVideoDur > 0.05) {
-            const trimFile = tmpTs("trim");
+        // ── 7. Mux video track + audio track → final output ────────
+        progress("Ghép video và audio...", 68);
 
-            const trimArgs = [
-                "-ss",
-                "0",
+        const ext         = videoFormat || "mp4";
+        const baseName    = path.basename(videoFile, path.extname(videoFile));
+        const finalOutput = path.join(outputFolder, `${baseName}_${id}.${ext}`);
 
-                "-t",
-                String(remainingVideoDur),
-
-                "-i",
-                normalizedFile,
-
-                "-c",
-                "copy",
-
-                "-avoid_negative_ts",
-                "make_zero",
-
-                "-f",
-                "mpegts",
-
-                "-y",
-
-                trimFile,
-            ];
-
-            await runFFmpeg(trimArgs);
-
-            concatList.push(trimFile);
-
-            videoSequence.push({
-                filename: path.basename(videoFile),
-                duration: remainingVideoDur,
-            });
-        }
-
-        // tail
-
-        concatList.push(tailFile);
-
-        // ─────────────────────────────────────────────────────
-        // MASTER CONCAT
-        // ─────────────────────────────────────────────────────
-
-        const masterConcatTxt =
-            tmpTxt("master_concat");
-
-        fs.writeFileSync(
-            masterConcatTxt,
-            concatList
-                .map(
-                    (f) =>
-                        `file '${f.replace(
-                            /'/g,
-                            "'\\''",
-                        )}'`,
-                )
-                .join("\n"),
-        );
-
-        // ─────────────────────────────────────────────────────
-        // FINAL OUTPUT
-        // ─────────────────────────────────────────────────────
-
-        progress("Final render...", 80);
-
-        const videoBaseName = path.basename(
-            videoFile,
-            path.extname(videoFile),
-        );
-
-        const finalOutput = path.join(
-            outputFolder,
-            `${videoBaseName}_output_${instanceId}.${videoFormat}`,
-        );
-
-        const finalArgs = [
-            "-fflags",
-            "+genpts",
-
-            "-f",
-            "concat",
-
-            "-safe",
-            "0",
-
-            "-i",
-            masterConcatTxt,
-
-            "-c",
-            "copy",
-
-            // "-movflags",
-            // "+faststart",
-
-            "-avoid_negative_ts",
-            "make_zero",
-
-            "-max_interleave_delta",
-            "0",
-
-            "-t",
-            String(TARGET),
-
-            "-y",
-
-            finalOutput,
-        ];
+        // Add small padding to avoid ffmpeg rounding down duration
+        const outputDuration = (TARGET + 0.05).toFixed(2);
 
         await runFFmpeg(
-            finalArgs,
+            [
+                "-i", finalVideoPath,
+                "-i", concatAudioPath,
+                "-c:v", "copy",
+                "-c:a", "aac", "-b:a", "192k",
+                "-t", outputDuration,
+                "-map", "0:v:0",
+                "-map", "1:a:0",
+                "-y", finalOutput,
+            ],
             TARGET,
-            (pct) => {
-                progress(
-                    "Đang xuất file...",
-                    80 +
-                    Math.floor(pct * 19),
-                );
-            },
+            (pct) => progress("Ghép video và audio...", 68 + Math.floor(pct * 30)),
         );
 
-        if (isCancelled) {
-            throw new Error("Task đã bị huỷ");
-        }
+        if (isCancelled) throw new Error("Task đã bị huỷ");
 
         progress("Hoàn tất!", 100);
 
-        cleanup();
+        cleanupTemp();
 
-        generateNote(
-            finalOutput,
-            videoSequence,
-            selectedAudios,
-            TARGET,
-        );
+        // Build sequence metadata for note
+        const videoSequence = [];
+        for (let i = 0; i < fullLoops; i++) {
+            videoSequence.push({
+                filename: path.basename(videoFile),
+                duration: i === fullLoops - 1 && srcDuration >= TARGET ? TARGET : srcDuration,
+            });
+        }
+        if (outroDuration > 0.05) {
+            videoSequence.push({ filename: "Màn hình đen", duration: outroDuration });
+        }
+
+        generateNote(finalOutput, videoSequence, selectedAudios, TARGET);
 
         send({
             type: "done",
@@ -1002,16 +640,14 @@ async function run() {
             result: {
                 success: true,
                 outputFile: finalOutput,
-                encoder: activeEncoder.vendor,
-                videoFile:
-                    path.basename(videoFile),
-                audioFiles:
-                    selectedAudios.map((f) =>
-                        path.basename(f),
-                    ),
+                encoder: encoder?.vendor || codec,
+                videoFile: path.basename(videoFile),
+                audioFiles: selectedAudios.map((f) => path.basename(f)),
             },
         });
     } catch (err) {
+        cleanupTemp();
+
         if (!isCancelled) {
             send({
                 type: "error",
@@ -1020,10 +656,7 @@ async function run() {
             });
         }
     } finally {
-        parentPort.off(
-            "message",
-            messageHandler,
-        );
+        parentPort.off("message", messageHandler);
     }
 }
 

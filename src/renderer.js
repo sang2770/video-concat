@@ -11,7 +11,6 @@ const videoFileList = document.getElementById('videoFileList');
 const audioFileList = document.getElementById('audioFileList');
 const videoFormat = document.getElementById('videoFormat');
 const videoBitrate = document.getElementById('videoBitrate');
-const enableVideoBitrate = document.getElementById('enableVideoBitrate');
 const audioCount = document.getElementById('audioCount');
 const targetHH = document.getElementById('targetHH');
 const targetMM = document.getElementById('targetMM');
@@ -133,10 +132,6 @@ function applyConfig(cfg) {
 
   // Form fields
   if (cfg.videoFormat) videoFormat.value = cfg.videoFormat;
-  if (typeof cfg.enableVideoBitrate === 'boolean') {
-    enableVideoBitrate.checked = cfg.enableVideoBitrate;
-    videoBitrate.disabled = !cfg.enableVideoBitrate;
-  }
   if (cfg.videoBitrate) videoBitrate.value = String(cfg.videoBitrate);
   if (cfg.audioCount) audioCount.value = String(cfg.audioCount);
 
@@ -180,13 +175,13 @@ let _saveTimer = null;
 function saveConfig() {
   clearTimeout(_saveTimer);
   _saveTimer = setTimeout(() => {
+    console.log(videoBitrate.value)
     window.api.configSet({
       videoFolder: state.videoFolder,
       audioFolder: state.audioFolder,
       outputFolder: state.outputFolder,
       videoFormat: videoFormat.value,
-      enableVideoBitrate: enableVideoBitrate.checked,
-      videoBitrate: parseInt(videoBitrate.value) || 5,
+      videoBitrate: parseInt(videoBitrate.value) ?? 1,
       audioCount: parseInt(audioCount.value) || 5,
       targetDuration: getTargetSeconds(),
       threadCount: parseInt(threadCount.value) || 2,
@@ -274,11 +269,8 @@ function updateTargetHint() {
 });
 
 // Save khi thay đổi các input số khác
-[videoFormat, videoBitrate, audioCount, enableVideoBitrate].forEach(el => {
+[videoFormat, videoBitrate, audioCount].forEach(el => {
   el.addEventListener('change', () => {
-    if (el === enableVideoBitrate) {
-      videoBitrate.disabled = !enableVideoBitrate.checked;
-    }
     saveConfig();
   });
 });
@@ -340,7 +332,6 @@ addJobBtn.addEventListener('click', async () => {
     audioFolder: state.audioFolder,
     outputFolder: state.outputFolder,
     videoFormat: videoFormat.value,
-    enableVideoBitrate: enableVideoBitrate.checked,
     videoBitrate: parseInt(videoBitrate.value),
     audioCount: parseInt(audioCount.value),
     targetDuration: getTargetSeconds(),
@@ -368,9 +359,7 @@ resetBtn.addEventListener('click', () => {
   videoFileList.innerHTML = '';
   audioFileList.innerHTML = '';
   videoFormat.value = 'mp4';
-  enableVideoBitrate.checked = false;
-  videoBitrate.disabled = true;
-  videoBitrate.value = '5';
+  videoBitrate.value = '0';
   audioCount.value = '5';
   targetHH.value = '0';
   targetMM.value = '20';
@@ -388,9 +377,6 @@ function validate() {
   if (!state.outputFolder) errs.push('Vui lòng chọn thư mục lưu kết quả');
   if (!state.videoFiles.length) errs.push('Thư mục video không chứa file video');
   if (!state.audioFiles.length) errs.push('Thư mục audio không chứa file audio');
-
-  const br = parseInt(videoBitrate.value);
-  if (isNaN(br) || br < 1 || br > 50) errs.push('Bitrate phải từ 1–50 Mbps');
 
   const ac = parseInt(audioCount.value);
   if (isNaN(ac) || ac < 1) errs.push('Số lượng bài hát phải ≥ 1');
