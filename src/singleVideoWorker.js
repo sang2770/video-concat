@@ -353,7 +353,7 @@ async function run() {
         for (const f of tempFiles) {
             try {
                 if (fs.existsSync(f)) fs.unlinkSync(f);
-            } catch (_) {}
+            } catch (_) { }
         }
     }
 
@@ -373,6 +373,9 @@ async function run() {
 
         if (isCancelled) throw new Error("Task đã bị huỷ");
 
+        // Base target duration for the entire sequence
+        const TARGET = targetDuration + 1;
+
         // ── 1. Probe input video ───────────────────────────────────
         progress("Phân tích video đầu vào...", 2);
         const { duration: srcDuration, streams } = await probeFile(videoFile);
@@ -381,15 +384,15 @@ async function run() {
         }
 
         const codecInfo = getVideoCodecInfo(streams);
-        const fps       = codecInfo ? parseFrameRate(codecInfo.r_frame_rate) : 30;
-        const width     = codecInfo?.width   || 1920;
-        const height    = codecInfo?.height  || 1080;
-        const pixFmt    = codecInfo?.pix_fmt || "yuv420p";
+        const fps = codecInfo ? parseFrameRate(codecInfo.r_frame_rate) : 30;
+        const width = codecInfo?.width || 1920;
+        const height = codecInfo?.height || 1080;
+        const pixFmt = codecInfo?.pix_fmt || "yuv420p";
 
-        const codec       = encoder?.codec || "libx264";
-        const preset      = getEncoderPreset(encoder);
-        const bitrateArgs = videoBitrate ? ["-b:v", String(videoBitrate)] : ["-crf", "23"];
-        const threadArgs  = threadCount > 0 ? ["-threads", String(threadCount)] : [];
+        const codec = encoder?.codec || "libx264";
+        const preset = getEncoderPreset(encoder);
+        const bitrateArgs = (videoBitrate && videoBitrate > 0) ? ["-b:v", `${videoBitrate}M`] : ["-crf", "23"];
+        const threadArgs = threadCount > 0 ? ["-threads", String(threadCount)] : [];
 
         // Detect whether re-encoding is needed (same codec family → stream copy)
         const INPUT_CODEC = codecInfo?.codec; // e.g. "h264", "hevc"
@@ -406,7 +409,7 @@ async function run() {
         const canStreamCopy =
             !videoBitrate &&
             (!encoder?.codec ||
-            codecFamily(INPUT_CODEC) === codecFamily(encoder.codec));
+                codecFamily(INPUT_CODEC) === codecFamily(encoder.codec));
 
         // Encoder used for synthetic segments (black screen) — must match input codec
         // so that stream-copy concat works when canStreamCopy is true.
@@ -414,7 +417,7 @@ async function run() {
         const outroEncoder = canStreamCopy
             ? (CODEC_MAP[INPUT_CODEC] || "libx264")
             : codec;
-        const outroPreset      = canStreamCopy ? "veryfast" : preset;
+        const outroPreset = canStreamCopy ? "veryfast" : preset;
         const outroBitrateArgs = canStreamCopy
             ? ["-crf", "23"]
             : bitrateArgs;
@@ -434,22 +437,23 @@ async function run() {
         }
 
         // Shuffle + pick audioCount files
-        const shuffled      = [...allAudioFiles].sort(() => Math.random() - 0.5);
+        const shuffled = [...allAudioFiles].sort(() => Math.random() - 0.5);
         const selectedAudios = shuffled.slice(0, Math.min(audioCount, shuffled.length));
 
         if (isCancelled) throw new Error("Task đã bị huỷ");
 
         // ── 3. Concatenate selected audio → temp AAC ──────────────
         progress("Ghép file audio...", 8);
-        const tmpDir          = os.tmpdir();
+        const tmpDir = os.tmpdir();
         const concatAudioPath = path.join(tmpDir, `vc_audio_${id}.aac`);
         tempFiles.push(concatAudioPath);
 
         // Add padding to ensure audio reaches full target duration
-        const audioDurationStr = (targetDuration + 0.1).toFixed(2);
+        const audioDurationStr = (TARGET + 0.5).toFixed(2);
 
         if (selectedAudios.length === 1) {
             await runFFmpeg([
+                "-stream_loop", "-1",
                 "-i", selectedAudios[0],
                 "-t", audioDurationStr,
                 "-c:a", "aac", "-b:a", "192k",
@@ -466,12 +470,13 @@ async function run() {
             await runFFmpeg(
                 [
                     "-f", "concat", "-safe", "0",
+                    "-stream_loop", "-1",
                     "-i", audioListPath,
                     "-t", audioDurationStr,
                     "-c:a", "aac", "-b:a", "192k",
                     "-y", concatAudioPath,
                 ],
-                targetDuration,
+                TARGET,
                 (pct) => progress("Ghép audio...", 8 + Math.floor(pct * 7)),
             );
         }
@@ -479,16 +484,15 @@ async function run() {
         if (isCancelled) throw new Error("Task đã bị huỷ");
 
         // ── 4. Compute loop count & outro (black screen) duration ──
-        const TARGET = targetDuration + 1;
         let fullLoops, videoPlayDuration;
 
         if (srcDuration >= TARGET) {
             // Input is longer than target: use one trimmed pass
-            fullLoops         = 1;
+            fullLoops = 1;
             videoPlayDuration = TARGET;
         } else {
             // Floor keeps only complete loops; remainder → black screen
-            fullLoops         = Math.floor(TARGET / srcDuration);
+            fullLoops = Math.floor(TARGET / srcDuration);
             videoPlayDuration = fullLoops * srcDuration;
         }
 
@@ -504,24 +508,24 @@ async function run() {
         // so N-1 gives exactly fullLoops total plays.
         const loopArgs = canStreamCopy
             ? [
-                  "-stream_loop", String(fullLoops - 1),
-                  "-i", videoFile,
-                  "-t", String(videoPlayDuration),
-                  "-an",
-                  "-c:v", "copy",
-                  "-avoid_negative_ts", "make_zero",
-                  "-y", loopedVideoPath,
-              ]
+                "-stream_loop", String(fullLoops - 1),
+                "-i", videoFile,
+                "-t", String(videoPlayDuration),
+                "-an",
+                "-c:v", "copy",
+                "-avoid_negative_ts", "make_zero",
+                "-y", loopedVideoPath,
+            ]
             : [
-                  "-stream_loop", String(fullLoops - 1),
-                  "-i", videoFile,
-                  "-t", String(videoPlayDuration),
-                  "-an",
-                  "-c:v", codec, ...bitrateArgs, "-preset", preset,
-                  "-r", String(fps), "-pix_fmt", pixFmt,
-                  ...threadArgs,
-                  "-y", loopedVideoPath,
-              ];
+                "-stream_loop", String(fullLoops - 1),
+                "-i", videoFile,
+                "-t", String(videoPlayDuration),
+                "-an",
+                "-c:v", codec, ...bitrateArgs, "-preset", preset,
+                "-r", String(fps), "-pix_fmt", pixFmt,
+                ...threadArgs,
+                "-y", loopedVideoPath,
+            ];
 
         await runFFmpeg(
             loopArgs,
@@ -560,7 +564,7 @@ async function run() {
 
             // Concat looped video + black screen → full video track
             progress("Ghép video + outro...", 58);
-            const vidListPath  = path.join(tmpDir, `vc_vlist_${id}.txt`);
+            const vidListPath = path.join(tmpDir, `vc_vlist_${id}.txt`);
             const fullVideoPath = path.join(tmpDir, `vc_full_${id}.mp4`);
             tempFiles.push(vidListPath, fullVideoPath);
 
@@ -592,8 +596,8 @@ async function run() {
         // ── 7. Mux video track + audio track → final output ────────
         progress("Ghép video và audio...", 68);
 
-        const ext         = videoFormat || "mp4";
-        const baseName    = path.basename(videoFile, path.extname(videoFile));
+        const ext = videoFormat || "mp4";
+        const baseName = path.basename(videoFile, path.extname(videoFile));
         const finalOutput = path.join(outputFolder, `${baseName}_${id}.${ext}`);
 
         // Add small padding to avoid ffmpeg rounding down duration
@@ -604,7 +608,7 @@ async function run() {
                 "-i", finalVideoPath,
                 "-i", concatAudioPath,
                 "-c:v", "copy",
-                "-c:a", "aac", "-b:a", "192k",
+                "-c:a", "copy",
                 "-t", outputDuration,
                 "-map", "0:v:0",
                 "-map", "1:a:0",
