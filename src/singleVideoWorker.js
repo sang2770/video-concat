@@ -444,9 +444,10 @@ async function run() {
         const tmpDir          = os.tmpdir();
         const concatAudioPath = path.join(tmpDir, `vc_audio_${id}.aac`);
         tempFiles.push(concatAudioPath);
+        const TARGET = targetDuration + 1;
 
         // Add padding to ensure audio reaches full target duration
-        const audioDurationStr = (targetDuration + 0.1).toFixed(2);
+        const audioDurationStr = (TARGET + 0.1).toFixed(2);
 
         if (selectedAudios.length === 1) {
             await runFFmpeg([
@@ -479,7 +480,6 @@ async function run() {
         if (isCancelled) throw new Error("Task đã bị huỷ");
 
         // ── 4. Compute loop count & outro (black screen) duration ──
-        const TARGET = targetDuration + 1;
         let fullLoops, videoPlayDuration;
 
         if (srcDuration >= TARGET) {
