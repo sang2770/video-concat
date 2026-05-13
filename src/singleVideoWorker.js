@@ -355,7 +355,9 @@ async function run() {
 
         const codec = encoder?.codec || "libx264";
         const preset = getEncoderPreset(encoder);
-        const bitrateArgs = videoBitrate ? ["-b:v", String(videoBitrate)] : ["-crf", "23"];
+        const bitrateArgs = (videoBitrate && videoBitrate !== "0" && videoBitrate !== 0) 
+            ? ["-b:v", `${videoBitrate}M`] 
+            : ["-crf", "23"];
         const threadArgs = threadCount > 0 ? ["-threads", String(threadCount)] : [];
 
         // Kiểm tra khả năng copy stream không cần mã hoá
@@ -371,7 +373,7 @@ async function run() {
         }
 
         const canStreamCopy =
-            !videoBitrate &&
+            (!videoBitrate || videoBitrate === "0" || videoBitrate === 0) &&
             (!encoder?.codec ||
                 codecFamily(INPUT_CODEC) === codecFamily(encoder.codec));
 
